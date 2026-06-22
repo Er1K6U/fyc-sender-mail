@@ -55,17 +55,18 @@ router.post(
     body('asunto').optional().trim(),
     body('descripcion').optional().trim(),
     body('json_design').optional(),
-    body('thumbnail_url').optional().isURL(),
+    // thumbnail_url omitido intencionalmente: Unlayer genera miniaturas Base64
+    // que son demasiado largas para almacenar como URL en la BD
   ],
   validar,
   async (req, res, next) => {
     try {
-      const { nombre, descripcion, asunto, html_content, json_design, thumbnail_url } = req.body;
+      const { nombre, descripcion, asunto, html_content, json_design } = req.body;
       const pool = db();
 
       const [result] = await pool.query(
-        `INSERT INTO templates (user_id, nombre, descripcion, asunto, html_content, json_design, thumbnail_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO templates (user_id, nombre, descripcion, asunto, html_content, json_design)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         [
           req.usuario.id,
           nombre,
@@ -73,7 +74,6 @@ router.post(
           asunto || '',
           html_content,
           json_design ? JSON.stringify(json_design) : null,
-          thumbnail_url || null,
         ]
       );
 
@@ -99,7 +99,6 @@ router.put(
     body('asunto').optional().trim(),
     body('descripcion').optional().trim(),
     body('json_design').optional(),
-    body('thumbnail_url').optional(),
   ],
   validar,
   async (req, res, next) => {
@@ -111,7 +110,7 @@ router.put(
       );
       if (!existente) return res.status(404).json({ error: 'Plantilla no encontrada' });
 
-      const campos = ['nombre', 'descripcion', 'asunto', 'html_content', 'thumbnail_url'];
+      const campos = ['nombre', 'descripcion', 'asunto', 'html_content'];
       const sets = [];
       const valores = [];
 

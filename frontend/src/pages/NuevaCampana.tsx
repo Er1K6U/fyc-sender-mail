@@ -73,12 +73,12 @@ export default function NuevaCampana() {
         api.get('/smtp'),
         api.get('/plantillas'),
       ])
-      setListas(rListas.data.listas)
-      setSmtpConfigs(rSmtp.data.configs)
-      setPlantillas(rPlantillas.data.plantillas)
+      setListas(rListas.data.listas ?? [])
+      setSmtpConfigs(rSmtp.data.smtp_configs ?? [])   // backend retorna smtp_configs, no configs
+      setPlantillas(rPlantillas.data.plantillas ?? [])
       // Preseleccionar primer SMTP
-      if (rSmtp.data.configs.length > 0) {
-        const smtp = rSmtp.data.configs[0]
+      if ((rSmtp.data.smtp_configs ?? []).length > 0) {
+        const smtp = rSmtp.data.smtp_configs[0]
         setForm(f => ({
           ...f,
           smtp_config_id: String(smtp.id),

@@ -89,7 +89,8 @@ export default function Constructor() {
     displayMode: 'email',
     locale: 'es-ES',
     appearance: {
-      theme: 'dark',
+      // NO usar theme:'dark' — react-email-editor v1.x lo interpreta pintando
+      // el canvas del iframe de negro. El editor siempre usa fondo claro internamente.
       panels: {
         tools: { dock: 'right' },
       },
@@ -148,10 +149,12 @@ export default function Constructor() {
   }, [])
 
   // ── Obtener HTML y diseño del editor ────────────────────────────────────
+  // En react-email-editor v1.8+ los métodos están en editorRef.current.editor
   const obtenerDatosEditor = (): Promise<{ html: string; design: object }> => {
     return new Promise((resolve, reject) => {
-      if (!editorRef.current) return reject(new Error('Editor no listo'))
-      editorRef.current.exportHtml(({ html, design }) => {
+      const unlayer = editorRef.current?.editor
+      if (!unlayer) return reject(new Error('Editor no listo'))
+      unlayer.exportHtml(({ html, design }) => {
         resolve({ html, design })
       })
     })
@@ -192,16 +195,17 @@ export default function Constructor() {
 
   // ── Cargar plantilla en el editor ───────────────────────────────────────
   const handleCargarPlantilla = (plantilla: any) => {
-    if (!editorRef.current) return
+    const unlayer = editorRef.current?.editor
+    if (!unlayer) return
 
     try {
       if (plantilla.json_design) {
         const design = typeof plantilla.json_design === 'string'
           ? JSON.parse(plantilla.json_design)
           : plantilla.json_design
-        editorRef.current.loadDesign(design)
+        unlayer.loadDesign(design)
       } else if (plantilla.html_content) {
-        editorRef.current.loadDesign({ html: plantilla.html_content } as any)
+        unlayer.loadDesign({ html: plantilla.html_content } as any)
       }
       setNombrePlantilla(plantilla.nombre)
       setAsunto(plantilla.asunto || '')
@@ -215,7 +219,7 @@ export default function Constructor() {
   // ── Nuevo diseño en blanco ───────────────────────────────────────────────
   const handleNuevo = () => {
     if (modificado && !confirm('¿Descartar los cambios no guardados?')) return
-    editorRef.current?.loadDesign(DISENO_INICIAL as any)
+    editorRef.current?.editor?.loadDesign(DISENO_INICIAL as any)
     resetear()
     mostrar('info' as any, 'Nuevo diseño en blanco')
   }
@@ -237,7 +241,7 @@ export default function Constructor() {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-0px)] -m-8 bg-background">
+    <div className="flex flex-col h-full bg-background">
 
       {/* ── BARRA DE HERRAMIENTAS SUPERIOR ── */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border/50 bg-card shrink-0">
@@ -382,8 +386,12 @@ export default function Constructor() {
           )}
         </div>
 
-        {/* Editor Unlayer */}
-        <div className="flex-1 min-w-0 relative">
+        {/* Editor Unlayer — aislado del tema oscuro global */}
+        {/* color-scheme:light fuerza al navegador a usar fondo claro dentro del iframe */}
+        <div
+          className="flex-1 min-w-0 relative"
+          style={{ colorScheme: 'light', backgroundColor: '#ffffff' }}
+        >
           {!editorListo && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-10 gap-4">
               <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -399,7 +407,7 @@ export default function Constructor() {
             ref={editorRef}
             onReady={onEditorListo}
             options={opcionesEditor}
-            style={{ height: '100%', minHeight: '600px' }}
+            style={{ position: 'absolute', inset: 0 }}
           />
         </div>
       </div>
@@ -419,6 +427,7 @@ export default function Constructor() {
         nombreInicial={nombrePlantilla}
         obtenerDatosEditor={obtenerDatosEditor}
         asunto={asunto}
+        editorListo={editorListo}
         onGuardada={(id, nombre) => {
           setPlantillaId(id)
           setNombrePlantilla(nombre)

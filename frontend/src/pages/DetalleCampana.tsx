@@ -96,8 +96,8 @@ export default function DetalleCampana() {
         abiertos: rCampana.data.campana.abiertos || 0,
         clicks: rCampana.data.campana.clicks || 0,
       })
-      setSends(rSends.data.sends)
-      setTotalSends(rSends.data.total)
+      setSends(rSends.data.sends ?? [])
+      setTotalSends(rSends.data.total ?? 0)
     } catch {
       mostrar('error', 'Error al cargar la campaña')
     } finally {

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
   ChevronLeft, Download, Eye, MousePointerClick, Send,
-  CheckCircle2, Users, ExternalLink, RefreshCw,
+  CheckCircle2, Users, ExternalLink, RefreshCw, AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'

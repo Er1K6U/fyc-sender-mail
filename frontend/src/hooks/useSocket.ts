@@ -5,9 +5,13 @@ type EventMap = Record<string, (...args: any[]) => void>
 
 let socketSingleton: Socket | null = null
 
+// En desarrollo el frontend corre en Vite (:5173+) y el backend en :3001 — son orígenes distintos.
+// En producción ambos sirven desde el mismo origen, se usa URL relativa.
+const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3001' : window.location.origin
+
 function getSocket(): Socket {
   if (!socketSingleton) {
-    socketSingleton = io(window.location.origin, {
+    socketSingleton = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       autoConnect: true,
       reconnection: true,

@@ -105,4 +105,18 @@
   .badge-pendiente { @apply bg-yellow-500/15 text-yellow-400 border border-yellow-500/20; }
   .badge-cola     { @apply bg-blue-500/15 text-blue-400 border border-blue-500/20; }
   .badge-rebotado { @apply bg-orange-500/15 text-orange-400 border border-orange-500/20; }
+
+  /* ── Aislamiento del editor Unlayer del tema oscuro global ── */
+  /* react-email-editor v1.x monta un <iframe> y no soporta dark theme real.
+     Forzamos color-scheme:light para que el navegador no inyecte fondo negro
+     al iframe, y reseteamos border-color para que * { border-color } no se filtre. */
+  .unlayer-editor,
+  .unlayer-editor * {
+    color-scheme: light;
+    border-color: initial;
+  }
+  .unlayer-editor iframe {
+    color-scheme: light;
+    display: block;
+  }
 }

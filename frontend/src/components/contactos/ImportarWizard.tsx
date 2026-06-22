@@ -116,6 +116,15 @@ export default function ImportarWizard({
   const emailMapeado = Object.values(mapeo).includes('email')
 
   const handleImportar = async () => {
+    if (!preview?.archivo_id) {
+      mostrar('warning', 'Falta el archivo', 'Sube el archivo antes de importar')
+      return
+    }
+    const listIdNum = parseInt(listId)
+    if (!listId || isNaN(listIdNum) || listIdNum < 1) {
+      mostrar('warning', 'Selecciona una lista', 'Debes elegir la lista de destino antes de importar')
+      return
+    }
     if (!emailMapeado) {
       mostrar('warning', 'Mapeo incompleto', 'Debes seleccionar la columna de email')
       return
@@ -129,8 +138,8 @@ export default function ImportarWizard({
       })
 
       const { data } = await api.post('/contactos/importar/ejecutar', {
-        archivo_id: preview!.archivo_id,
-        list_id: parseInt(listId),
+        archivo_id: preview.archivo_id,
+        list_id: listIdNum,
         mapeo: mapeoFinal,
       })
       setResumen(data.resumen)
