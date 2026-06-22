@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS `campaigns` (
   KEY `idx_camp_programada` (`programada_para`),
   CONSTRAINT `fk_camp_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_camp_list` FOREIGN KEY (`list_id`) REFERENCES `contact_lists` (`id`),
-  CONSTRAINT `fk_camp_smtp` FOREIGN KEY (`smtp_config_id`) REFERENCES `smtp_configs` (`id`) ON SET NULL
+  CONSTRAINT `fk_camp_smtp` FOREIGN KEY (`smtp_config_id`) REFERENCES `smtp_configs` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
