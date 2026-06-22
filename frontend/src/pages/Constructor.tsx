@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import EmailEditor, { type EditorRef, type EmailEditorProps } from '@unlayer/react'
+import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 import {
   Save, Eye, Download, FileText, Braces, Undo2,
   Monitor, Smartphone, Loader2, ChevronLeft, ChevronRight,
