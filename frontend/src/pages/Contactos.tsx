@@ -15,6 +15,7 @@ import ImportarWizard from '@/components/contactos/ImportarWizard'
 import ContactoModal from '@/components/contactos/ContactoModal'
 import ListaModal from '@/components/contactos/ListaModal'
 import api from '@/lib/api'
+import type { Contacto } from '@/types/contacto'
 
 interface Lista {
   id: number
@@ -22,18 +23,6 @@ interface Lista {
   descripcion?: string
   total_contactos: number
   activos: number
-}
-
-interface Contacto {
-  id: number
-  nombre: string
-  email: string
-  empresa?: string
-  email_valido: number
-  suscrito: number
-  fecha_unsub?: string
-  created_at: string
-  lista_nombre?: string
 }
 
 interface Paginacion {

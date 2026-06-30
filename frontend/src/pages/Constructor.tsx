@@ -102,7 +102,7 @@ export default function Constructor() {
       video: { enabled: true },
     },
     features: {
-      stockImages: { enabled: false }, // desactivar stock de Unsplash (requiere API key)
+      stockImages: false as any, // desactivar stock de Unsplash (requiere API key)
       sendTestEmail: false,
       preheaderText: true,
       textEditor: {
@@ -121,7 +121,7 @@ export default function Constructor() {
   }
 
   // ── Callback al estar listo el editor ───────────────────────────────────
-  const onEditorListo: EmailEditorProps['onReady'] = useCallback((unlayer) => {
+  const onEditorListo: EmailEditorProps['onReady'] = useCallback((unlayer: any) => {
     setEditorListo(true)
 
     // Cargar diseño inicial

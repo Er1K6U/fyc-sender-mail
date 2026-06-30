@@ -8,18 +8,11 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/components/ui/toast'
 import api from '@/lib/api'
+import type { ContactoForm as Contacto } from '@/types/contacto'
 
 interface Lista {
   id: number
   nombre: string
-}
-
-interface Contacto {
-  id?: number
-  nombre: string
-  email: string
-  empresa: string
-  list_id?: number
 }
 
 interface Props {
