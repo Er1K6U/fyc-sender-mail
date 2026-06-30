@@ -18,6 +18,8 @@ const uploadsRoutes = require('./routes/uploads');
 const campanasRoutes = require('./routes/campanas');
 const trackingRoutes = require('./routes/tracking');
 const reportesRoutes = require('./routes/reportes');
+const usuariosRoutes = require('./routes/usuarios');
+const settingsRoutes = require('./routes/settings');
 
 const app = express();
 
@@ -83,6 +85,8 @@ app.use('/api/uploads', uploadsRoutes);
 app.use('/api/campanas', campanasRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/reportes', reportesRoutes);
+app.use('/api/usuarios', usuariosRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

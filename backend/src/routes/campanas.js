@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const { db } = require('../config/database');
-const { autenticar } = require('../middleware/auth');
+const { autenticar, soloAdmin } = require('../middleware/auth');
 const {
   encolarCampaña,
   pausarCampaña,
@@ -194,7 +194,8 @@ router.put(
 );
 
 // ── DELETE /api/campanas/:id ──────────────────────────────────────────────────
-router.delete('/:id', async (req, res, next) => {
+// Eliminar campañas restringido a administradores (rol operativo limitado).
+router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(

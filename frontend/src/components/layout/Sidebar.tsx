@@ -26,13 +26,15 @@ const navItems = [
 ]
 
 const configItems = [
-  { to: '/smtp', icon: Server, label: 'Configuración SMTP' },
-  { to: '/ajustes', icon: Settings, label: 'Ajustes' },
+  { to: '/smtp', icon: Server, label: 'Configuración SMTP', soloAdmin: true },
+  { to: '/ajustes', icon: Settings, label: 'Ajustes', soloAdmin: false },
 ]
 
 export default function Sidebar() {
   const { usuario, cerrarSesion } = useAuthStore()
   const navigate = useNavigate()
+  const esAdmin = usuario?.rol === 'admin'
+  const configVisibles = configItems.filter(item => esAdmin || !item.soloAdmin)
 
   const handleLogout = async () => {
     try {
@@ -89,7 +91,7 @@ export default function Sidebar() {
           <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
             Configuración
           </p>
-          {configItems.map(({ to, icon: Icon, label }) => (
+          {configVisibles.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}

@@ -4,6 +4,7 @@ const { db } = require('../config/database');
 const { getRedisOpciones } = require('../config/redis');
 const { crearTransporter, enviarEmail } = require('./smtpService');
 const socketService = require('./socketService');
+const settingsService = require('./settingsService');
 const logger = require('../config/logger');
 
 // ── Cola principal de envío de emails ────────────────────────────────────────
@@ -340,13 +341,28 @@ async function encolarCampaña(campaignId) {
     [campaignId]
   );
 
-  // Configurar throttle: emails por minuto
-  const emailsPorMin = campaña.emails_por_min || parseInt(process.env.DEFAULT_EMAILS_PER_MINUTE) || 20;
-  const delayMs = Math.ceil(60000 / emailsPorMin); // ms entre emails
+  // Configurar throttle: emails por minuto.
+  // El valor global actúa como TOPE MÁXIMO (cap): ninguna campaña puede superarlo.
+  const throttleGlobal = await settingsService.getThrottle();
+  const emailsPorMinCampaña = campaña.emails_por_min || throttleGlobal.emails_por_min || 20;
+  const emailsPorMin = Math.min(emailsPorMinCampaña, throttleGlobal.emails_por_min);
+  const delayBaseMs = Math.ceil(60000 / emailsPorMin); // ms entre emails
+
+  // Jitter: randomización ±jitter_pct sobre el intervalo base para un patrón menos robótico.
+  const jitterPct = Math.max(0, Math.min(100, throttleGlobal.jitter_pct || 0));
+
+  // Delay acumulado con jitter aplicado a cada paso (no escalonado fijo).
+  let delayAcumulado = 0;
 
   // Agregar jobs a Bull con delay escalonado para respetar throttle
-  const jobsPromises = sends.map((send, index) =>
-    cola.add('send-email', {
+  const jobsPromises = sends.map((send) => {
+    // Variación aleatoria del intervalo: base * (1 ± jitterPct/100)
+    const factor = 1 + ((Math.random() * 2 - 1) * jitterPct) / 100;
+    const pasoMs = Math.max(0, Math.round(delayBaseMs * factor));
+    const delayActual = delayAcumulado;
+    delayAcumulado += pasoMs;
+
+    return cola.add('send-email', {
       campaignId,
       sendId: send.sendId,
       contactId: send.contact_id,
@@ -360,15 +376,15 @@ async function encolarCampaña(campaignId) {
       smtpConfig,
       appUrl: process.env.APP_URL || 'http://localhost:3001',
     }, {
-      delay: index * delayMs,
+      delay: delayActual,
       attempts: parseInt(process.env.DEFAULT_RETRY_ATTEMPTS) || 3,
       backoff: {
         type: 'exponential',
         delay: parseInt(process.env.DEFAULT_RETRY_DELAY_MS) || 5000,
       },
       jobId: `send_${campaignId}_${send.sendId}`, // idempotencia
-    })
-  );
+    });
+  });
 
   await Promise.all(jobsPromises);
 

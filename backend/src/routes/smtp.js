@@ -1,11 +1,14 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { db } = require('../config/database');
-const { autenticar } = require('../middleware/auth');
+const { autenticar, soloAdmin } = require('../middleware/auth');
 const { verificarConexion } = require('../services/smtpService');
 
 const router = express.Router();
 router.use(autenticar);
+// Nota: el LISTADO (GET) queda disponible para cualquier usuario autenticado
+// porque se necesita al crear campañas. La GESTIÓN (crear/editar/eliminar/probar)
+// se restringe a administradores en cada ruta (rol operativo limitado).
 
 function validarCampos(req, res, next) {
   const errores = validationResult(req);
@@ -44,7 +47,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // POST /api/smtp - Crear configuración SMTP
-router.post('/', reglasSmtp, validarCampos, async (req, res, next) => {
+router.post('/', soloAdmin, reglasSmtp, validarCampos, async (req, res, next) => {
   try {
     const { nombre, host, puerto, seguro, usuario, password, from_nombre, from_email, limite_dia } = req.body;
     const pool = db();
@@ -82,6 +85,7 @@ router.post('/', reglasSmtp, validarCampos, async (req, res, next) => {
 // PUT /api/smtp/:id - Actualizar configuración SMTP
 router.put(
   '/:id',
+  soloAdmin,
   [param('id').isInt().toInt(), ...reglasSmtp.map(r => r.optional())],
   validarCampos,
   async (req, res, next) => {
@@ -129,7 +133,7 @@ router.put(
 );
 
 // DELETE /api/smtp/:id - Eliminar configuración SMTP
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [result] = await pool.query(
@@ -148,6 +152,7 @@ router.delete('/:id', async (req, res, next) => {
 // POST /api/smtp/:id/test - Probar conexión SMTP
 router.post(
   '/:id/test',
+  soloAdmin,
   [
     param('id').isInt().toInt(),
     body('email_destino').isEmail().withMessage('Proporciona un email válido para la prueba'),

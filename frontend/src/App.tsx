@@ -14,7 +14,7 @@ import NuevaCampana from '@/pages/NuevaCampana'
 import DetalleCampana from '@/pages/DetalleCampana'
 import Reportes from '@/pages/Reportes'
 import ReporteCampana from '@/pages/ReporteCampana'
-import Placeholder from '@/pages/Placeholder'
+import Ajustes from '@/pages/Ajustes'
 
 export default function App() {
   return (
@@ -35,7 +35,7 @@ export default function App() {
             <Route path="/contactos" element={<Contactos />} />
             <Route path="/plantillas" element={<Plantillas />} />
             <Route path="/smtp" element={<SmtpConfig />} />
-            <Route path="/ajustes" element={<Placeholder titulo="Ajustes" />} />
+            <Route path="/ajustes" element={<Ajustes />} />
           </Route>
 
           {/* Constructor — layout fullscreen (sin padding interior) */}

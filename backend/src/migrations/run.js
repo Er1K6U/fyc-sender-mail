@@ -24,11 +24,17 @@ async function ejecutarMigraciones() {
     await conn.query(`USE \`${process.env.DB_NAME || 'emailbuilder'}\``);
     console.log(`✅ Base de datos '${process.env.DB_NAME}' lista`);
 
-    // Ejecutar schema SQL
-    const schemaPath = path.join(__dirname, '001_schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf8');
-    await conn.query(schema);
-    console.log('✅ Schema SQL aplicado');
+    // Ejecutar migraciones SQL en orden (todos los .sql del directorio)
+    const archivosSql = fs
+      .readdirSync(__dirname)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
+
+    for (const archivo of archivosSql) {
+      const sql = fs.readFileSync(path.join(__dirname, archivo), 'utf8');
+      await conn.query(sql);
+      console.log(`✅ Migración aplicada: ${archivo}`);
+    }
 
     // Crear usuario administrador inicial si no existe
     const adminEmail = process.env.ADMIN_EMAIL;
