@@ -21,6 +21,10 @@ frontend/dist/
 frontend/build/
 frontend/.vite/
 
+# Artefactos generados por tsc al compilar vite.config.ts
+frontend/vite.config.d.ts
+frontend/vite.config.js
+
 # ============================================================
 # Uploads de usuarios (imágenes, CSVs temporales)
 # ============================================================
