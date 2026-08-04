@@ -46,16 +46,14 @@ router.get(
       } = req.query;
 
       const pool = db();
-      const params = [req.usuario.id];
-      let where = 'c.user_id = ?';
+      // Los contactos son compartidos, igual que las listas que los contienen:
+      // filtrar por user_id dejaría al editor viendo listas vacías.
+      const params = [];
+      let where = '1 = 1';
 
       if (list_id) {
         where += ' AND c.list_id = ?';
         params.push(list_id);
-      } else {
-        // Solo mostrar contactos de listas del usuario
-        where += ' AND c.list_id IN (SELECT id FROM contact_lists WHERE user_id = ?)';
-        params.push(req.usuario.id);
       }
 
       if (q) {
@@ -125,8 +123,8 @@ router.post(
 
       // Verificar que la lista pertenece al usuario
       const [[lista]] = await pool.query(
-        'SELECT id FROM contact_lists WHERE id = ? AND user_id = ?',
-        [list_id, req.usuario.id]
+        'SELECT id FROM contact_lists WHERE id = ?',
+        [list_id]
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
 
@@ -176,8 +174,8 @@ router.put(
     try {
       const pool = db();
       const [[contacto]] = await pool.query(
-        'SELECT * FROM contacts WHERE id = ? AND user_id = ?',
-        [req.params.id, req.usuario.id]
+        'SELECT * FROM contacts WHERE id = ?',
+        [req.params.id]
       );
       if (!contacto) return res.status(404).json({ error: 'Contacto no encontrado' });
 
@@ -210,8 +208,8 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const pool = db();
     const [[contacto]] = await pool.query(
-      'SELECT list_id FROM contacts WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'SELECT list_id FROM contacts WHERE id = ?',
+      [req.params.id]
     );
     if (!contacto) return res.status(404).json({ error: 'Contacto no encontrado' });
 
@@ -233,13 +231,13 @@ router.delete('/', [body('ids').isArray({ min: 1 })], validar, async (req, res, 
 
     // Obtener list_ids afectados antes de borrar
     const [afectados] = await pool.query(
-      `SELECT DISTINCT list_id FROM contacts WHERE id IN (?) AND user_id = ?`,
-      [ids, req.usuario.id]
+      `SELECT DISTINCT list_id FROM contacts WHERE id IN (?)`,
+      [ids]
     );
 
     await pool.query(
-      'DELETE FROM contacts WHERE id IN (?) AND user_id = ?',
-      [ids, req.usuario.id]
+      'DELETE FROM contacts WHERE id IN (?)',
+      [ids]
     );
 
     for (const { list_id } of afectados) {
@@ -296,10 +294,10 @@ router.post(
       const { archivo_id, list_id, mapeo } = req.body;
       const pool = db();
 
-      // Verificar que la lista pertenece al usuario
+      // Verificar que la lista existe (las listas son compartidas)
       const [[lista]] = await pool.query(
-        'SELECT id, nombre FROM contact_lists WHERE id = ? AND user_id = ?',
-        [list_id, req.usuario.id]
+        'SELECT id, nombre FROM contact_lists WHERE id = ?',
+        [list_id]
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
 
@@ -343,8 +341,8 @@ router.post('/:id/desuscribir', async (req, res, next) => {
   try {
     const pool = db();
     const [[contacto]] = await pool.query(
-      'SELECT * FROM contacts WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'SELECT * FROM contacts WHERE id = ?',
+      [req.params.id]
     );
     if (!contacto) return res.status(404).json({ error: 'Contacto no encontrado' });
 

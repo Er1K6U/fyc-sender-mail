@@ -3,6 +3,7 @@ const { body, param, validationResult } = require('express-validator');
 const { db } = require('../config/database');
 const { autenticar, soloAdmin } = require('../middleware/auth');
 const { verificarConexion } = require('../services/smtpService');
+const smtpAcceso = require('../services/smtpAccesoService');
 
 const router = express.Router();
 router.use(autenticar);
@@ -29,17 +30,12 @@ const reglasSmtp = [
   body('limite_dia').optional().isInt({ min: 1 }).withMessage('Límite diario inválido'),
 ];
 
-// GET /api/smtp - Listar configuraciones SMTP del usuario
+// GET /api/smtp - Cuentas SMTP accesibles para el usuario
+// El admin ve todas; el resto solo las que tenga asignadas (user_smtp_configs).
 router.get('/', async (req, res, next) => {
   try {
-    const pool = db();
-    const [rows] = await pool.query(
-      `SELECT id, nombre, host, puerto, seguro, usuario, from_nombre, from_email,
-              limite_dia, enviados_hoy, activo, verificado, created_at
-       FROM smtp_configs WHERE user_id = ? ORDER BY created_at DESC`,
-      [req.usuario.id]
-    );
     // No devolver passwords nunca
+    const rows = await smtpAcceso.listarAccesibles(req.usuario);
     res.json({ smtp_configs: rows });
   } catch (error) {
     next(error);
@@ -91,9 +87,11 @@ router.put(
   async (req, res, next) => {
     try {
       const pool = db();
+      // Sin filtro por user_id: cualquier admin gestiona cualquier cuenta,
+      // incluidas las creadas por otro administrador.
       const [existente] = await pool.query(
-        'SELECT id FROM smtp_configs WHERE id = ? AND user_id = ?',
-        [req.params.id, req.usuario.id]
+        'SELECT id FROM smtp_configs WHERE id = ?',
+        [req.params.id]
       );
       if (existente.length === 0) {
         return res.status(404).json({ error: 'Configuración no encontrada' });
@@ -137,8 +135,8 @@ router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [result] = await pool.query(
-      'DELETE FROM smtp_configs WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'DELETE FROM smtp_configs WHERE id = ?',
+      [req.params.id]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Configuración no encontrada' });
@@ -162,8 +160,8 @@ router.post(
     try {
       const pool = db();
       const [rows] = await pool.query(
-        'SELECT * FROM smtp_configs WHERE id = ? AND user_id = ?',
-        [req.params.id, req.usuario.id]
+        'SELECT * FROM smtp_configs WHERE id = ?',
+        [req.params.id]
       );
 
       if (rows.length === 0) {
@@ -191,15 +189,23 @@ router.post(
 router.get('/:id/stats', async (req, res, next) => {
   try {
     const pool = db();
+
+    // El admin puede consultar cualquiera; el editor solo las asignadas.
+    // exigirActiva=false: interesa ver las estadísticas aunque esté desactivada.
+    const accesible = await smtpAcceso.puedeUsar(req.usuario, Number(req.params.id), false);
+    if (!accesible) {
+      return res.status(404).json({ error: 'Configuración no encontrada' });
+    }
+
     const [rows] = await pool.query(
       `SELECT s.id, s.nombre, s.limite_dia, s.enviados_hoy, s.fecha_reset,
               COUNT(cs.id) as total_enviados_historico
        FROM smtp_configs s
        LEFT JOIN campaigns c ON c.smtp_config_id = s.id AND c.deleted_at IS NULL
        LEFT JOIN campaign_sends cs ON cs.campaign_id = c.id AND cs.estado = 'enviado'
-       WHERE s.id = ? AND s.user_id = ?
+       WHERE s.id = ?
        GROUP BY s.id`,
-      [req.params.id, req.usuario.id]
+      [req.params.id]
     );
 
     if (rows.length === 0) {

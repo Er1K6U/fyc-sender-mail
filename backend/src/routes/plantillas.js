@@ -21,9 +21,7 @@ router.get('/', async (req, res, next) => {
     const [plantillas] = await pool.query(
       `SELECT id, nombre, descripcion, asunto, thumbnail_url, created_at, updated_at
        FROM templates
-       WHERE user_id = ?
-       ORDER BY updated_at DESC`,
-      [req.usuario.id]
+       ORDER BY updated_at DESC`
     );
     res.json({ plantillas });
   } catch (error) {
@@ -36,8 +34,8 @@ router.get('/:id', async (req, res, next) => {
   try {
     const pool = db();
     const [[plantilla]] = await pool.query(
-      `SELECT * FROM templates WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.usuario.id]
+      `SELECT * FROM templates WHERE id = ?`,
+      [req.params.id]
     );
     if (!plantilla) return res.status(404).json({ error: 'Plantilla no encontrada' });
     res.json({ plantilla });
@@ -105,8 +103,8 @@ router.put(
     try {
       const pool = db();
       const [[existente]] = await pool.query(
-        'SELECT id FROM templates WHERE id = ? AND user_id = ?',
-        [req.params.id, req.usuario.id]
+        'SELECT id FROM templates WHERE id = ?',
+        [req.params.id]
       );
       if (!existente) return res.status(404).json({ error: 'Plantilla no encontrada' });
 
@@ -143,8 +141,8 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const pool = db();
     const [result] = await pool.query(
-      'DELETE FROM templates WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'DELETE FROM templates WHERE id = ?',
+      [req.params.id]
     );
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Plantilla no encontrada' });
     res.json({ mensaje: 'Plantilla eliminada' });
@@ -158,8 +156,8 @@ router.post('/:id/duplicar', async (req, res, next) => {
   try {
     const pool = db();
     const [[original]] = await pool.query(
-      'SELECT * FROM templates WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'SELECT * FROM templates WHERE id = ?',
+      [req.params.id]
     );
     if (!original) return res.status(404).json({ error: 'Plantilla no encontrada' });
 

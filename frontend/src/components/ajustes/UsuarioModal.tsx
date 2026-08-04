@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { UserPlus, KeyRound } from 'lucide-react'
+import { UserPlus, KeyRound, Server, Star, ShieldCheck } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog'
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/components/ui/toast'
+import { cn } from '@/lib/utils'
 import api from '@/lib/api'
 import type { Usuario } from '@/types/usuario'
 
@@ -17,6 +18,13 @@ interface Props {
   onGuardado: () => void
 }
 
+interface CuentaSmtp {
+  id: number
+  nombre: string
+  from_email: string
+  activo: number
+}
+
 export default function UsuarioModal({ open, onClose, usuario, onGuardado }: Props) {
   const editando = !!usuario?.id
   const [form, setForm] = useState({ nombre: '', email: '', password: '', rol: 'editor' as string })
@@ -24,17 +32,57 @@ export default function UsuarioModal({ open, onClose, usuario, onGuardado }: Pro
   const [guardando, setGuardando] = useState(false)
   const { mostrar } = useToast()
 
+  // Asignación de cuentas SMTP
+  const [cuentas, setCuentas] = useState<CuentaSmtp[]>([])
+  const [asignadas, setAsignadas] = useState<number[]>([])
+  const [principal, setPrincipal] = useState<number | null>(null)
+
   useEffect(() => {
-    if (open) {
-      setForm({
-        nombre: usuario?.nombre || '',
-        email: usuario?.email || '',
-        password: '',
-        rol: usuario?.rol || 'editor',
-      })
-      setErrores({})
+    if (!open) return
+
+    setForm({
+      nombre: usuario?.nombre || '',
+      email: usuario?.email || '',
+      password: '',
+      rol: usuario?.rol || 'editor',
+    })
+    setErrores({})
+    setAsignadas([])
+    setPrincipal(null)
+
+    const cargar = async () => {
+      // El admin ve todas las cuentas, así que este listado sirve de catálogo.
+      const { data } = await api.get('/smtp')
+      setCuentas(data.smtp_configs ?? [])
+
+      if (usuario?.id) {
+        const { data: asig } = await api.get(`/usuarios/${usuario.id}/smtp`)
+        setAsignadas((asig.asignaciones ?? []).map((a: any) => a.smtp_config_id))
+        const p = (asig.asignaciones ?? []).find((a: any) => a.es_principal)
+        setPrincipal(p ? p.smtp_config_id : null)
+      }
     }
+    cargar().catch(() => mostrar('error', 'Error al cargar las cuentas SMTP'))
   }, [open, usuario])
+
+  const toggleCuenta = (id: number) => {
+    setAsignadas(prev => {
+      const yaEsta = prev.includes(id)
+      const siguiente = yaEsta ? prev.filter(x => x !== id) : [...prev, id]
+      // Si se quita la que era principal, se deja sin principal.
+      if (yaEsta && principal === id) setPrincipal(null)
+      // La primera que se marca pasa a ser principal por comodidad.
+      if (!yaEsta && siguiente.length === 1) setPrincipal(id)
+      return siguiente
+    })
+  }
+
+  const guardarAsignaciones = async (userId: number) => {
+    await api.put(`/usuarios/${userId}/smtp`, {
+      smtp_config_ids: asignadas,
+      principal_id: principal,
+    })
+  }
 
   const validar = () => {
     const e: Record<string, string> = {}
@@ -56,14 +104,18 @@ export default function UsuarioModal({ open, onClose, usuario, onGuardado }: Pro
           email: form.email,
           rol: form.rol,
         })
+        await guardarAsignaciones(usuario!.id)
         mostrar('success', 'Usuario actualizado')
       } else {
-        await api.post('/usuarios', {
+        const { data } = await api.post('/usuarios', {
           nombre: form.nombre,
           email: form.email,
           password: form.password,
           rol: form.rol,
         })
+        // El usuario no existe hasta este momento: las asignaciones se guardan
+        // justo después, con el id que devuelve la creación.
+        if (data?.usuario?.id) await guardarAsignaciones(data.usuario.id)
         mostrar('success', 'Usuario creado correctamente')
       }
       onGuardado()
@@ -145,6 +197,91 @@ export default function UsuarioModal({ open, onClose, usuario, onGuardado }: Pro
               Para cambiar la contraseña usa la acción "Restablecer contraseña" en la tabla.
             </div>
           )}
+
+          {/* ── Asignación de cuentas SMTP ── */}
+          <div className="border-t border-border/50 pt-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Server className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Cuentas SMTP disponibles</span>
+            </div>
+
+            {form.rol === 'admin' ? (
+              <div className="flex items-start gap-2 rounded-lg bg-primary/5 border border-primary/15 p-3 text-xs text-muted-foreground">
+                <ShieldCheck className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                <span>
+                  Los administradores acceden a <strong>todas</strong> las cuentas por su rol.
+                  Lo que marques aquí solo define cuál viene preseleccionada al crear campañas.
+                </span>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Este usuario solo podrá enviar campañas con las cuentas que marques.
+                Si no marcas ninguna, no podrá crear campañas.
+              </p>
+            )}
+
+            {cuentas.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic py-2">
+                No hay cuentas SMTP configuradas todavía.
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                {cuentas.map(c => {
+                  const marcada = asignadas.includes(c.id)
+                  return (
+                    <div
+                      key={c.id}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg border p-2.5 transition-colors',
+                        marcada ? 'border-primary/30 bg-primary/5' : 'border-border/50'
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={marcada}
+                        onChange={() => toggleCuenta(c.id)}
+                        className="w-4 h-4 accent-primary shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {c.nombre}
+                          {!c.activo && (
+                            <span className="ml-2 text-[10px] text-orange-400">(inactiva)</span>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">{c.from_email}</p>
+                      </div>
+                      {marcada && (
+                        <button
+                          type="button"
+                          onClick={() => setPrincipal(c.id)}
+                          title={principal === c.id ? 'Es la principal' : 'Marcar como principal'}
+                          className={cn(
+                            'p-1.5 rounded-md transition-colors shrink-0',
+                            principal === c.id
+                              ? 'text-yellow-400'
+                              : 'text-muted-foreground hover:text-yellow-400'
+                          )}
+                        >
+                          <Star
+                            className="h-4 w-4"
+                            fill={principal === c.id ? 'currentColor' : 'none'}
+                          />
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {asignadas.length > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                La cuenta marcada con <Star className="h-3 w-3 inline text-yellow-400" fill="currentColor" />{' '}
+                viene preseleccionada al crear campañas.
+              </p>
+            )}
+          </div>
         </div>
 
         <DialogFooter>

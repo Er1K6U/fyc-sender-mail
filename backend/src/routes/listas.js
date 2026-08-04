@@ -14,16 +14,17 @@ function validar(req, res, next) {
   next();
 }
 
-// GET /api/listas - Listar todas las listas del usuario
+// GET /api/listas - Listar todas las listas
+// Las listas son compartidas entre todos los usuarios autenticados: user_id
+// se conserva como creador, pero ya no restringe la visibilidad. Sin esto un
+// editor no vería las listas importadas por el administrador.
 router.get('/', async (req, res, next) => {
   try {
     const pool = db();
     const [listas] = await pool.query(
       `SELECT id, nombre, descripcion, total_contactos, activos, created_at
        FROM contact_lists
-       WHERE user_id = ?
-       ORDER BY created_at DESC`,
-      [req.usuario.id]
+       ORDER BY created_at DESC`
     );
     res.json({ listas });
   } catch (error) {
@@ -74,8 +75,8 @@ router.put(
     try {
       const pool = db();
       const [existente] = await pool.query(
-        'SELECT id FROM contact_lists WHERE id = ? AND user_id = ?',
-        [req.params.id, req.usuario.id]
+        'SELECT id FROM contact_lists WHERE id = ?',
+        [req.params.id]
       );
       if (existente.length === 0) {
         return res.status(404).json({ error: 'Lista no encontrada' });
@@ -102,8 +103,8 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const pool = db();
     const [result] = await pool.query(
-      'DELETE FROM contact_lists WHERE id = ? AND user_id = ?',
-      [req.params.id, req.usuario.id]
+      'DELETE FROM contact_lists WHERE id = ?',
+      [req.params.id]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Lista no encontrada' });
@@ -126,9 +127,9 @@ router.get('/:id/stats', async (req, res, next) => {
               SUM(c.email_valido = 0) AS invalidos
        FROM contact_lists cl
        LEFT JOIN contacts c ON c.list_id = cl.id
-       WHERE cl.id = ? AND cl.user_id = ?
+       WHERE cl.id = ?
        GROUP BY cl.id`,
-      [req.params.id, req.usuario.id]
+      [req.params.id]
     );
     if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
     res.json({ stats: lista });

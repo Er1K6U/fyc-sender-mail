@@ -3,6 +3,8 @@ const bcrypt = require('bcryptjs');
 const { body, param, validationResult } = require('express-validator');
 const { db } = require('../config/database');
 const { autenticar, soloAdmin } = require('../middleware/auth');
+const smtpAcceso = require('../services/smtpAccesoService');
+const auditService = require('../services/auditService');
 
 const router = express.Router();
 
@@ -232,5 +234,81 @@ router.delete('/:id', [param('id').isInt().toInt()], validarCampos, async (req, 
     next(error);
   }
 });
+
+// ── GET /api/usuarios/:id/smtp ────────────────────────────────────────────────
+// Cuentas SMTP asignadas a un usuario.
+router.get('/:id/smtp', [param('id').isInt().toInt()], validarCampos, async (req, res, next) => {
+  try {
+    const pool = db();
+    const [[usuario]] = await pool.query('SELECT id, rol FROM users WHERE id = ?', [req.params.id]);
+    if (!usuario) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const asignaciones = await smtpAcceso.asignacionesDe(req.params.id);
+    res.json({
+      asignaciones,
+      // Los admin acceden a todas por su rol: las asignaciones solo les sirven
+      // para marcar cuál viene preseleccionada.
+      acceso_total_por_rol: usuario.rol === 'admin',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── PUT /api/usuarios/:id/smtp ────────────────────────────────────────────────
+// Reemplaza el conjunto completo de asignaciones del usuario.
+router.put(
+  '/:id/smtp',
+  [
+    param('id').isInt().toInt(),
+    body('smtp_config_ids').isArray().withMessage('smtp_config_ids debe ser un array'),
+    body('smtp_config_ids.*').isInt().withMessage('Cada id debe ser un entero'),
+    body('principal_id').optional({ nullable: true }).isInt(),
+  ],
+  validarCampos,
+  async (req, res, next) => {
+    try {
+      const pool = db();
+      const [[usuario]] = await pool.query(
+        'SELECT id, nombre, email FROM users WHERE id = ?',
+        [req.params.id]
+      );
+      if (!usuario) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+      const resultado = await smtpAcceso.reemplazarAsignaciones(
+        req.params.id,
+        req.body.smtp_config_ids.map(Number),
+        req.body.principal_id ?? null,
+        req.usuario.id
+      );
+
+      // Auditar solo si hubo cambio real, para no llenar el log de ruido.
+      // audit_log es inmutable: lo que entra no se puede depurar después.
+      if (resultado.añadidas.length > 0 || resultado.quitadas.length > 0) {
+        await auditService.registrar({
+          evento: resultado.añadidas.length > 0
+            ? auditService.EVENTOS.SMTP_ASIGNADO
+            : auditService.EVENTOS.SMTP_DESASIGNADO,
+          usuario: req.usuario,
+          ip: req.ip,
+          detalle: {
+            usuario_afectado_id: usuario.id,
+            usuario_afectado_nombre: usuario.nombre,
+            usuario_afectado_email: usuario.email,
+            cuentas_anadidas: resultado.añadidas,
+            cuentas_quitadas: resultado.quitadas,
+            principal: resultado.principal,
+            total_asignadas: resultado.total,
+          },
+        });
+      }
+
+      const asignaciones = await smtpAcceso.asignacionesDe(req.params.id);
+      res.json({ asignaciones, mensaje: 'Asignaciones actualizadas' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

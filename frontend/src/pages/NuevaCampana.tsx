@@ -2,19 +2,24 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, ChevronRight, Send, Users, FileText,
-  Settings, Clock, Check, Calendar, Zap,
+  Settings, Clock, Check, Calendar, Zap, AlertCircle, Lock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/store/authStore'
 import api from '@/lib/api'
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 interface Lista { id: number; nombre: string; activos: number }
-interface SmtpConfig { id: number; nombre?: string; from_nombre: string; from_email: string; host: string }
+interface SmtpConfig {
+  id: number; nombre?: string; from_nombre: string; from_email: string; host: string
+  es_principal?: number
+}
 interface Plantilla { id: number; nombre: string; asunto: string; thumbnail_url?: string }
 
 interface FormData {
@@ -44,6 +49,7 @@ const PASOS = [
 export default function NuevaCampana() {
   const navigate = useNavigate()
   const { mostrar } = useToast()
+  const esAdmin = useAuthStore(s => s.usuario?.rol === 'admin')
   const [paso, setPaso] = useState(1)
   const [guardando, setGuardando] = useState(false)
 
@@ -95,9 +101,11 @@ export default function NuevaCampana() {
         emails_por_hora: String(globalHora),
       }))
 
-      // Preseleccionar primer SMTP
-      if ((rSmtp.data.smtp_configs ?? []).length > 0) {
-        const smtp = rSmtp.data.smtp_configs[0]
+      // Preseleccionar la cuenta marcada como principal por el admin; si no
+      // hay ninguna marcada, la primera de la lista.
+      const cuentas: SmtpConfig[] = rSmtp.data.smtp_configs ?? []
+      if (cuentas.length > 0) {
+        const smtp = cuentas.find(c => c.es_principal === 1) || cuentas[0]
         setForm(f => ({
           ...f,
           smtp_config_id: String(smtp.id),
@@ -141,6 +149,11 @@ export default function NuevaCampana() {
         if (!form.list_id) return 'Selecciona una lista de contactos'
         return null
       case 4:
+        if (smtpConfigs.length === 0) {
+          return esAdmin
+            ? 'No hay ninguna cuenta SMTP configurada. Crea una en Configuración SMTP.'
+            : 'No tienes ninguna cuenta SMTP asignada. Contacta al administrador.'
+        }
         if (!form.smtp_config_id) return 'Selecciona una configuración SMTP'
         return null
       case 5:
@@ -418,31 +431,87 @@ export default function NuevaCampana() {
             <div className="space-y-5">
               <div className="space-y-3">
                 <Label>Cuenta SMTP *</Label>
-                {smtpConfigs.map(smtp => (
-                  <button
-                    key={smtp.id}
-                    onClick={() => setForm(f => ({
-                      ...f,
-                      smtp_config_id: String(smtp.id),
-                      from_nombre: f.from_nombre || smtp.from_nombre,
-                      from_email: f.from_email || smtp.from_email,
-                    }))}
-                    className={cn(
-                      'w-full flex items-center gap-4 rounded-lg border-2 p-4 text-left transition-all hover:border-primary/50',
-                      form.smtp_config_id === String(smtp.id)
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border bg-secondary/40'
-                    )}
-                  >
-                    <div className="flex-1">
-                      <p className="font-medium">{smtp.from_nombre} &lt;{smtp.from_email}&gt;</p>
-                      <p className="text-xs text-muted-foreground">{smtp.host}</p>
+
+                {/* Sin cuentas: el editor no puede continuar hasta que el admin
+                    le asigne una. El admin ve otro mensaje porque su caso es
+                    que aún no hay ninguna configurada. */}
+                {smtpConfigs.length === 0 && (
+                  <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="h-5 w-5 text-orange-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-medium text-orange-400">
+                          {esAdmin
+                            ? 'No hay ninguna cuenta SMTP configurada'
+                            : 'No tienes ninguna cuenta SMTP asignada'}
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                          {esAdmin
+                            ? 'Crea una cuenta en Configuración SMTP para poder enviar campañas.'
+                            : 'Contacta al administrador para que te asigne una cuenta de envío. Sin ella no es posible crear la campaña.'}
+                        </p>
+                        {esAdmin && (
+                          <Button
+                            variant="outline" size="sm" className="mt-3"
+                            onClick={() => navigate('/smtp')}
+                          >
+                            Ir a Configuración SMTP
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                    {form.smtp_config_id === String(smtp.id) && (
-                      <Check className="h-5 w-5 text-primary" />
-                    )}
-                  </button>
-                ))}
+                  </div>
+                )}
+
+                {/* Una sola cuenta asignada a un editor: fija, visible pero no
+                    editable, y ya viene preseleccionada. */}
+                {smtpConfigs.length === 1 && !esAdmin && (
+                  <div className="rounded-lg border-2 border-primary bg-primary/5 p-4">
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <p className="font-medium">
+                          {smtpConfigs[0].from_nombre} &lt;{smtpConfigs[0].from_email}&gt;
+                        </p>
+                        <p className="text-xs text-muted-foreground">{smtpConfigs[0].host}</p>
+                      </div>
+                      <Lock className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-primary/20">
+                      Esta cuenta fue asignada por el administrador y no se puede cambiar.
+                    </p>
+                  </div>
+                )}
+
+                {/* Varias cuentas (o admin): elección libre entre las visibles. */}
+                {smtpConfigs.length > 0 && !(smtpConfigs.length === 1 && !esAdmin) &&
+                  smtpConfigs.map(smtp => (
+                    <button
+                      key={smtp.id}
+                      onClick={() => setForm(f => ({
+                        ...f,
+                        smtp_config_id: String(smtp.id),
+                        from_nombre: f.from_nombre || smtp.from_nombre,
+                        from_email: f.from_email || smtp.from_email,
+                      }))}
+                      className={cn(
+                        'w-full flex items-center gap-4 rounded-lg border-2 p-4 text-left transition-all hover:border-primary/50',
+                        form.smtp_config_id === String(smtp.id)
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border bg-secondary/40'
+                      )}
+                    >
+                      <div className="flex-1">
+                        <p className="font-medium">{smtp.from_nombre} &lt;{smtp.from_email}&gt;</p>
+                        <p className="text-xs text-muted-foreground">{smtp.host}</p>
+                      </div>
+                      {smtp.es_principal === 1 && (
+                        <Badge variant="secondary" className="text-[10px]">Principal</Badge>
+                      )}
+                      {form.smtp_config_id === String(smtp.id) && (
+                        <Check className="h-5 w-5 text-primary" />
+                      )}
+                    </button>
+                  ))}
               </div>
 
               <div className="border-t border-border pt-4 space-y-4">

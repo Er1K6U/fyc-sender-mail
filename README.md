@@ -282,6 +282,29 @@ una hora, momento en que hay un hueco garantizado.
 
 ---
 
+## Roles y acceso a cuentas SMTP
+
+| Recurso | Admin | Editor |
+|---|---|---|
+| Contactos, listas, plantillas | Total | Total (**compartidos** entre todos los usuarios) |
+| Campañas | Las suyas | Las suyas (no puede eliminar) |
+| Cuentas SMTP | Ve y gestiona **todas** | Solo usa las que tenga **asignadas** |
+| Usuarios, Auditoría, Ajustes | Sí | No (salvo "Mi cuenta") |
+
+Las cuentas SMTP se asignan desde **Ajustes → Usuarios**, al editar un usuario. Se puede
+marcar una como **principal** para que venga preseleccionada al crear campañas.
+
+`smtp_configs.user_id` indica **quién creó** la cuenta, no quién puede usarla: el acceso
+lo determina la tabla `user_smtp_configs`. La restricción se valida en el backend al crear
+**y al editar** campañas, de modo que una petición manipulada no puede usar una cuenta no
+asignada.
+
+> **Nota sobre recursos compartidos:** listas, contactos y plantillas son visibles y
+> editables por cualquier usuario autenticado, incluida su eliminación. No hay aislamiento
+> entre usuarios para esos recursos.
+
+---
+
 ## Auditoría y trazabilidad
 
 El módulo de auditoría (`/auditoria`, solo administradores) conserva el historial de

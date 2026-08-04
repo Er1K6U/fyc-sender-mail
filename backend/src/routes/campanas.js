@@ -10,6 +10,7 @@ const {
   estadisticasCola,
 } = require('../services/queueService');
 const auditService = require('../services/auditService');
+const smtpAcceso = require('../services/smtpAccesoService');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -154,19 +155,22 @@ router.post(
         programada_para,
       } = req.body;
 
-      // Verificar que la lista pertenece al usuario
+      // Las listas son compartidas entre todos los usuarios autenticados.
       const [[lista]] = await pool.query(
-        'SELECT id, activos FROM contact_lists WHERE id = ? AND user_id = ?',
-        [list_id, req.usuario.id]
+        'SELECT id, activos FROM contact_lists WHERE id = ?',
+        [list_id]
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
 
-      // Verificar que el SMTP pertenece al usuario
-      const [[smtp]] = await pool.query(
-        'SELECT id FROM smtp_configs WHERE id = ? AND user_id = ? AND activo = 1',
-        [smtp_config_id, req.usuario.id]
-      );
-      if (!smtp) return res.status(404).json({ error: 'Configuración SMTP no encontrada o inactiva' });
+      // Barrera de seguridad: un editor no puede usar una cuenta SMTP que no
+      // tenga asignada, aunque manipule la petición. La restricción de la UI
+      // no basta. El admin puede usar cualquiera activa.
+      const puedeUsarSmtp = await smtpAcceso.puedeUsar(req.usuario, Number(smtp_config_id));
+      if (!puedeUsarSmtp) {
+        return res.status(403).json({
+          error: 'No tienes asignada esa cuenta SMTP o está inactiva. Contacta al administrador.',
+        });
+      }
 
       const estado = programada_para ? 'programada' : 'borrador';
 
@@ -229,6 +233,19 @@ router.put(
       if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
       if (['enviando', 'completada'].includes(campana.estado)) {
         return res.status(409).json({ error: `No se puede editar una campaña en estado "${campana.estado}"` });
+      }
+
+      // Misma barrera que al crear: sin esto, un editor podría crear la campaña
+      // con su cuenta asignada y luego editarla para apuntar a otra.
+      if (req.body.smtp_config_id !== undefined) {
+        const puedeUsarSmtp = await smtpAcceso.puedeUsar(
+          req.usuario, Number(req.body.smtp_config_id)
+        );
+        if (!puedeUsarSmtp) {
+          return res.status(403).json({
+            error: 'No tienes asignada esa cuenta SMTP o está inactiva. Contacta al administrador.',
+          });
+        }
       }
 
       const editables = ['nombre', 'asunto', 'from_nombre', 'from_email', 'html_content',
