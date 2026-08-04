@@ -16,7 +16,7 @@ async function obtenerCampana(pool, campaignId, userId) {
      FROM campaigns c
      LEFT JOIN contact_lists cl ON cl.id = c.list_id
      LEFT JOIN smtp_configs sc ON sc.id = c.smtp_config_id
-     WHERE c.id = ? AND c.user_id = ?`,
+     WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
     [campaignId, userId]
   );
   return campana;
@@ -41,7 +41,7 @@ router.get('/general', async (req, res) => {
          COUNT(CASE WHEN estado = 'enviando' THEN 1 END) AS en_envio,
          COUNT(CASE WHEN estado = 'borrador' THEN 1 END) AS borradores
        FROM campaigns
-       WHERE user_id = ?`,
+       WHERE user_id = ? AND deleted_at IS NULL`,
       [userId]
     );
 
@@ -54,7 +54,7 @@ router.get('/general', async (req, res) => {
               COALESCE(fallidos, 0) AS fallidos,
               completada_en, created_at
        FROM campaigns
-       WHERE user_id = ? AND estado = 'completada'
+       WHERE user_id = ? AND estado = 'completada' AND deleted_at IS NULL
        ORDER BY completada_en DESC
        LIMIT 8`,
       [userId]
@@ -67,7 +67,8 @@ router.get('/general', async (req, res) => {
          AVG(CASE WHEN enviados > 0 THEN (clicks / enviados) * 100 ELSE 0 END) AS tasa_clicks_avg,
          AVG(CASE WHEN total_envios > 0 THEN (fallidos / total_envios) * 100 ELSE 0 END) AS tasa_error_avg
        FROM campaigns
-       WHERE user_id = ? AND estado = 'completada' AND enviados > 0`,
+       WHERE user_id = ? AND estado = 'completada' AND enviados > 0
+         AND deleted_at IS NULL`,
       [userId]
     );
 
@@ -77,6 +78,7 @@ router.get('/general', async (req, res) => {
        FROM campaign_sends cs
        JOIN campaigns c ON c.id = cs.campaign_id
        WHERE c.user_id = ?
+         AND c.deleted_at IS NULL
          AND cs.estado = 'enviado'
          AND cs.enviado_en >= DATE_SUB(NOW(), INTERVAL 30 DAY)
        GROUP BY DATE(cs.enviado_en)

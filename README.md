@@ -266,6 +266,46 @@ v=DMARC1; p=quarantine; rua=mailto:admin@tudominio.com; pct=100
 
 ---
 
+## Auditoría y trazabilidad
+
+El módulo de auditoría (`/auditoria`, solo administradores) conserva el historial de
+envíos aunque se eliminen campañas:
+
+- **Soft delete de campañas.** Eliminar una campaña la marca con `deleted_at` y
+  `deleted_by`, y la oculta del listado. Nunca se borra físicamente, y sus registros de
+  `campaign_sends` y `email_events` se conservan íntegros. Las FK están en
+  `ON DELETE RESTRICT`, así que un `DELETE` manual por SQL falla en vez de arrasar el
+  histórico. Un admin puede restaurarla desde la vista de auditoría.
+- **Tabla `audit_log` inmutable.** No tiene foreign keys a propósito: ninguna eliminación
+  en cascada puede alcanzarla. Guarda snapshots del nombre de campaña, usuario y cuenta
+  SMTP, de modo que el registro sigue siendo legible aunque esas filas desaparezcan.
+- **Los enlaces de tracking siguen activos** para campañas eliminadas. Es deliberado:
+  cortar el `List-Unsubscribe` de correos ya entregados sería un problema de cumplimiento.
+
+### Inmutabilidad fuerte de `audit_log`
+
+La migración 004 crea triggers `BEFORE UPDATE` / `BEFORE DELETE` que abortan cualquier
+modificación. Pero **un trigger lo puede eliminar cualquiera con privilegios DDL**. Para
+inmutabilidad real, revoca los permisos al usuario MySQL de la aplicación:
+
+```sql
+REVOKE UPDATE, DELETE ON emailbuilder.audit_log FROM 'usuario_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+La aplicación solo hace `INSERT` y `SELECT` sobre esa tabla, así que revocar `UPDATE` y
+`DELETE` no afecta a su funcionamiento.
+
+### Cuadre de cuota por cuenta SMTP
+
+`campaign_sends.smtp_config_id` guarda la cuenta usada en cada envío como snapshot, así
+que la atribución no cambia aunque después se edite la cuenta de la campaña. La vista de
+auditoría contrasta el contador `enviados_hoy` con el conteo real de registros del día y
+muestra la desviación. El conteo refleja **correos aceptados por el servidor SMTP**, que
+es la métrica que consume cuota del proveedor; un rebote posterior al ACK ya la consumió.
+
+---
+
 ## Scripts disponibles
 
 ```bash

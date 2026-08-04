@@ -5,6 +5,7 @@ const { getRedisOpciones } = require('../config/redis');
 const { crearTransporter, enviarEmail, esErrorLimiteProveedor } = require('./smtpService');
 const socketService = require('./socketService');
 const settingsService = require('./settingsService');
+const auditService = require('./auditService');
 const logger = require('../config/logger');
 
 // ── Cola principal de envío de emails ────────────────────────────────────────
@@ -194,10 +195,15 @@ async function procesarEnvio(job) {
       await marcarEnvio(pool, sendId, 'enviado', null, messageId);
       await actualizarContadoresCampaña(pool, campaignId, 'enviado');
 
-      // Incrementar contador SMTP del día
+      // Incrementar contador SMTP del día.
+      // Si el último envío fue en una fecha anterior, el contador arranca de
+      // nuevo: antes solo se sumaba y fecha_reset nunca provocaba el reinicio,
+      // así que enviados_hoy acumulaba de por vida y no cuadraba con la cuota.
       await pool.query(
-        `UPDATE smtp_configs SET enviados_hoy = enviados_hoy + 1,
-         fecha_reset = CURDATE() WHERE id = ?`,
+        `UPDATE smtp_configs
+         SET enviados_hoy = IF(fecha_reset IS NULL OR fecha_reset < CURDATE(), 1, enviados_hoy + 1),
+             fecha_reset = CURDATE()
+         WHERE id = ?`,
         [smtpConfig.id]
       );
 
@@ -294,10 +300,26 @@ async function emitirProgresoActual(pool, campaignId) {
 
   // Detectar si la campaña se completó
   if (pendientes === 0 && procesados === camp.total_envios && camp.total_envios > 0) {
-    await pool.query(
+    const [transicion] = await pool.query(
       `UPDATE campaigns SET estado = 'completada', completada_en = NOW() WHERE id = ? AND estado = 'enviando'`,
       [campaignId]
     );
+
+    // Varios workers pueden llegar aquí a la vez. Solo el que realiza la
+    // transición real notifica y audita: audit_log es inmutable y un registro
+    // duplicado no se podría corregir después.
+    if (transicion.affectedRows === 0) return;
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_COMPLETADA,
+      campaignId,
+      detalle: {
+        total: camp.total_envios,
+        enviados: camp.enviados,
+        fallidos: camp.fallidos,
+      },
+    });
+
     socketService.emitirCompletada(campaignId, {
       total: camp.total_envios,
       enviados: camp.enviados,
@@ -374,9 +396,12 @@ async function encolarCampaña(campaignId) {
   }
 
   // Crear registros campaign_sends en batch (IGNORE duplicados)
-  const valores = contactos.map(c => [campaignId, c.id, c.email, 'pendiente']);
+  // Se guarda smtp_config_id como snapshot: la atribución del envío queda
+  // congelada aunque después se edite la cuenta SMTP de la campaña.
+  const valores = contactos.map(c => [campaignId, c.id, c.email, 'pendiente', campaña.smtp_id]);
   await pool.query(
-    `INSERT IGNORE INTO campaign_sends (campaign_id, contact_id, email, estado) VALUES ?`,
+    `INSERT IGNORE INTO campaign_sends
+       (campaign_id, contact_id, email, estado, smtp_config_id) VALUES ?`,
     [valores]
   );
 
@@ -536,6 +561,17 @@ async function pausarPorLimiteProveedor(campaignId, smtpConfigId, mensajeError) 
     `Campaña ${campaignId} pausada por límite del proveedor (intento ${intento}). ` +
     `Reanuda en ${esperaMin} min. Error: ${mensajeError}`
   );
+
+  await auditService.registrar({
+    evento: auditService.EVENTOS.PAUSA_LIMITE_SMTP,
+    campaignId,
+    detalle: {
+      intento,
+      espera_min: esperaMin,
+      reanudar_en: camp?.reanudar_en || null,
+      error: String(mensajeError || '').slice(0, 300),
+    },
+  });
 
   socketService.emitirPausada(campaignId, {
     motivo: 'limite_smtp',

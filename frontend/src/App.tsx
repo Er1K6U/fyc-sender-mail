@@ -15,6 +15,8 @@ import DetalleCampana from '@/pages/DetalleCampana'
 import Reportes from '@/pages/Reportes'
 import ReporteCampana from '@/pages/ReporteCampana'
 import Ajustes from '@/pages/Ajustes'
+import Auditoria from '@/pages/Auditoria'
+import RutaAdmin from '@/components/layout/RutaAdmin'
 
 export default function App() {
   return (
@@ -36,6 +38,10 @@ export default function App() {
             <Route path="/plantillas" element={<Plantillas />} />
             <Route path="/smtp" element={<SmtpConfig />} />
             <Route path="/ajustes" element={<Ajustes />} />
+            {/* Auditoría: material sensible, solo administradores */}
+            <Route element={<RutaAdmin />}>
+              <Route path="/auditoria" element={<Auditoria />} />
+            </Route>
           </Route>
 
           {/* Constructor — layout fullscreen (sin padding interior) */}

@@ -9,6 +9,7 @@ const {
   cancelarCampaña,
   estadisticasCola,
 } = require('../services/queueService');
+const auditService = require('../services/auditService');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -38,11 +39,65 @@ router.get('/', async (req, res, next) => {
        LEFT JOIN contact_lists cl ON cl.id = c.list_id
        LEFT JOIN templates t ON t.id = c.template_id
        LEFT JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.user_id = ?
+       WHERE c.user_id = ? AND c.deleted_at IS NULL
        ORDER BY c.created_at DESC`,
       [req.usuario.id]
     );
     res.json({ campanas });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/campanas/eliminadas ──────────────────────────────────────────────
+// Campañas con soft delete. Solo admin. Debe declararse ANTES de GET /:id
+// para que Express no interprete "eliminadas" como un id.
+router.get('/eliminadas', soloAdmin, async (req, res, next) => {
+  try {
+    const pool = db();
+    const [campanas] = await pool.query(
+      `SELECT c.id, c.nombre, c.asunto, c.estado, c.total_envios, c.enviados,
+              c.fallidos, c.created_at, c.deleted_at, c.deleted_by,
+              u.nombre AS eliminada_por_nombre, u.email AS eliminada_por_email,
+              cl.nombre AS lista_nombre, s.nombre AS smtp_nombre
+       FROM campaigns c
+       LEFT JOIN users u ON u.id = c.deleted_by
+       LEFT JOIN contact_lists cl ON cl.id = c.list_id
+       LEFT JOIN smtp_configs s ON s.id = c.smtp_config_id
+       WHERE c.deleted_at IS NOT NULL
+       ORDER BY c.deleted_at DESC`
+    );
+    res.json({ campanas });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /api/campanas/:id/restaurar ──────────────────────────────────────────
+router.post('/:id/restaurar', soloAdmin, async (req, res, next) => {
+  try {
+    const pool = db();
+    const [[campana]] = await pool.query(
+      'SELECT id, nombre FROM campaigns WHERE id = ? AND deleted_at IS NOT NULL',
+      [req.params.id]
+    );
+    if (!campana) {
+      return res.status(404).json({ error: 'No hay ninguna campaña eliminada con ese id' });
+    }
+
+    await pool.query(
+      'UPDATE campaigns SET deleted_at = NULL, deleted_by = NULL WHERE id = ?',
+      [req.params.id]
+    );
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_RESTAURADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+    });
+
+    res.json({ mensaje: 'Campaña restaurada' });
   } catch (error) {
     next(error);
   }
@@ -61,7 +116,7 @@ router.get('/:id', async (req, res, next) => {
        LEFT JOIN contact_lists cl ON cl.id = c.list_id
        LEFT JOIN templates t ON t.id = c.template_id
        LEFT JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.id = ? AND c.user_id = ?`,
+       WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -136,6 +191,13 @@ router.post(
         [result.insertId]
       );
 
+      await auditService.registrar({
+        evento: auditService.EVENTOS.CAMPANA_CREADA,
+        campaignId: result.insertId,
+        usuario: req.usuario,
+        ip: req.ip,
+      });
+
       res.status(201).json({ campana: nueva, mensaje: 'Campaña creada correctamente' });
     } catch (error) {
       next(error);
@@ -161,7 +223,7 @@ router.put(
     try {
       const pool = db();
       const [[campana]] = await pool.query(
-        'SELECT id, estado FROM campaigns WHERE id = ? AND user_id = ?',
+        'SELECT id, estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
         [req.params.id, req.usuario.id]
       );
       if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -199,7 +261,7 @@ router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ?',
+      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -207,8 +269,26 @@ router.delete('/:id', soloAdmin, async (req, res, next) => {
       return res.status(409).json({ error: 'No se puede eliminar una campaña en curso. Paúsala primero.' });
     }
 
-    await pool.query('DELETE FROM campaigns WHERE id = ?', [req.params.id]);
-    res.json({ mensaje: 'Campaña eliminada' });
+    // Soft delete: la campaña y todos sus registros de envío se conservan.
+    // El evento se audita ANTES de marcar, para que el snapshot recoja los
+    // contadores finales de la campaña todavía activa.
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_ELIMINADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: { estado_al_eliminar: campana.estado },
+    });
+
+    await pool.query(
+      `UPDATE campaigns SET deleted_at = NOW(), deleted_by = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+      [req.usuario.id, req.params.id]
+    );
+
+    res.json({
+      mensaje: 'Campaña eliminada. Su historial de envíos se conserva para auditoría.',
+    });
   } catch (error) {
     next(error);
   }
@@ -222,7 +302,7 @@ router.post('/:id/iniciar', async (req, res, next) => {
       `SELECT c.*, s.verificado, s.limite_dia, s.enviados_hoy
        FROM campaigns c
        JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.id = ? AND c.user_id = ?`,
+       WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
       [req.params.id, req.usuario.id]
     );
 
@@ -252,6 +332,16 @@ router.post('/:id/iniciar', async (req, res, next) => {
       pool.query(`UPDATE campaigns SET estado = 'error' WHERE id = ?`, [req.params.id]);
     });
 
+    await auditService.registrar({
+      evento: campana.estado === 'pausada'
+        ? auditService.EVENTOS.CAMPANA_REANUDADA
+        : auditService.EVENTOS.CAMPANA_INICIADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: { estado_previo: campana.estado, disponible_hoy: disponibleHoy },
+    });
+
     res.json({ mensaje: 'Campaña iniciada. Los emails se están encolando.' });
   } catch (error) {
     next(error);
@@ -263,7 +353,7 @@ router.post('/:id/pausar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ?',
+      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -272,6 +362,15 @@ router.post('/:id/pausar', async (req, res, next) => {
     }
 
     await pausarCampaña(req.params.id);
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_PAUSADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: { motivo: 'manual' },
+    });
+
     res.json({ mensaje: 'Campaña pausada' });
   } catch (error) {
     next(error);
@@ -283,7 +382,7 @@ router.post('/:id/reanudar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ?',
+      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -294,6 +393,13 @@ router.post('/:id/reanudar', async (req, res, next) => {
     reanudarCampaña(req.params.id).catch(err =>
       logger.error(`Error al reanudar campaña ${req.params.id}:`, err)
     );
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_REANUDADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+    });
 
     res.json({ mensaje: 'Campaña reanudada' });
   } catch (error) {
@@ -306,12 +412,21 @@ router.post('/:id/cancelar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ?',
+      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     await cancelarCampaña(req.params.id);
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_CANCELADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: { estado_previo: campana.estado },
+    });
+
     res.json({ mensaje: 'Campaña cancelada' });
   } catch (error) {
     next(error);
@@ -336,7 +451,7 @@ router.get(
 
       // Verificar pertenencia
       const [[campana]] = await pool.query(
-        'SELECT id FROM campaigns WHERE id = ? AND user_id = ?',
+        'SELECT id FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
         [req.params.id, req.usuario.id]
       );
       if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -383,7 +498,7 @@ router.get('/:id/progreso', async (req, res, next) => {
     const pool = db();
     const [[campana]] = await pool.query(
       `SELECT enviados, fallidos, total_envios, estado, iniciada_en, completada_en
-       FROM campaigns WHERE id = ? AND user_id = ?`,
+       FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
       [req.params.id, req.usuario.id]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });

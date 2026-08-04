@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Zap,
   BarChart2,
+  ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
@@ -27,6 +28,7 @@ const navItems = [
 
 const configItems = [
   { to: '/smtp', icon: Server, label: 'Configuración SMTP', soloAdmin: true },
+  { to: '/auditoria', icon: ShieldCheck, label: 'Auditoría', soloAdmin: true },
   { to: '/ajustes', icon: Settings, label: 'Ajustes', soloAdmin: false },
 ]
 

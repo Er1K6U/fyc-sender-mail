@@ -195,7 +195,7 @@ router.get('/:id/stats', async (req, res, next) => {
       `SELECT s.id, s.nombre, s.limite_dia, s.enviados_hoy, s.fecha_reset,
               COUNT(cs.id) as total_enviados_historico
        FROM smtp_configs s
-       LEFT JOIN campaigns c ON c.smtp_config_id = s.id
+       LEFT JOIN campaigns c ON c.smtp_config_id = s.id AND c.deleted_at IS NULL
        LEFT JOIN campaign_sends cs ON cs.campaign_id = c.id AND cs.estado = 'enviado'
        WHERE s.id = ? AND s.user_id = ?
        GROUP BY s.id`,
