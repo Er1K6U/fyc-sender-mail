@@ -264,6 +264,22 @@ v=DMARC1; p=quarantine; rua=mailto:admin@tudominio.com; pct=100
 
 > Configura siempre `emails_por_min` conservadoramente para evitar que Gmail marque como spam.
 
+### Cómo se aplican los límites
+
+`emails_por_min` y `emails_por_hora` son **barreras reales**, no orientativas:
+
+1. **Al encolar**, el espaciado entre correos es el mayor de los dos intervalos
+   (`60s / por_min` y `3600s / por_hora`), de modo que el plan respeta ambos topes por
+   construcción.
+2. **Antes de cada envío**, una compuerta cuenta los correos de los últimos 60 minutos
+   (ventana móvil) y difiere el envío si se alcanzó el tope, ya sea **por campaña** o
+   **por cuenta SMTP**. El límite por cuenta agrega todas las campañas que la usan, que
+   es lo que de verdad protege de los límites de Gmail y no puede preverse al encolar.
+
+Cuando un envío se difiere, el registro sigue en estado `pendiente` (no se pierde ningún
+correo) y se reencola exactamente para cuando el envío más antiguo de la ventana cumpla
+una hora, momento en que hay un hueco garantizado.
+
 ---
 
 ## Auditoría y trazabilidad

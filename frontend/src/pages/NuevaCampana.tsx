@@ -483,8 +483,9 @@ export default function NuevaCampana() {
 
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Los valores vienen de <strong>Ajustes → Envío</strong>. Puedes bajarlos para esta
-                  campaña, pero no superarlos: al enviar, el sistema recorta la velocidad al límite
-                  global de emails/minuto para proteger la reputación de la cuenta.
+                  campaña, pero no superarlos. Ambos topes se aplican de verdad: el sistema cuenta
+                  los envíos de la última hora y pausa el encolado al alcanzar el límite, tanto por
+                  campaña como por cuenta SMTP (sumando todas las campañas que la usen).
                 </p>
               </div>
             </div>

@@ -54,6 +54,110 @@ function cerrarTodosLosTransporters() {
   }
 }
 
+// ── Límite horario (ventana móvil de 60 minutos) ─────────────────────────────
+
+// Evita inundar el log de la campaña cuando muchos jobs se difieren a la vez.
+const ultimoAvisoDiferido = new Map();
+const MS_ENTRE_AVISOS = 60_000;
+
+/**
+ * Compuerta de límite horario. Se evalúa ANTES de cada envío.
+ *
+ * Cuenta los correos ya enviados en los últimos 60 minutos y comprueba dos
+ * topes independientes:
+ *   - por campaña: min(campaña.emails_por_hora, global)
+ *   - por cuenta SMTP: el límite global, agregando TODAS las campañas que usan
+ *     esa cuenta. Es el que de verdad protege de los límites de Gmail, y solo
+ *     puede aplicarse aquí: al encolar no se conoce lo que harán otras campañas.
+ *
+ * Cuando un tope está lleno, el hueco se libera exactamente cuando el envío más
+ * antiguo de la ventana cumple una hora. Ese es el tiempo de espera devuelto:
+ * es exacto y garantiza que al reintentar haya al menos un hueco libre.
+ *
+ * @returns {{permitido: boolean, esperaMs: number, motivo: string}}
+ */
+async function verificarLimiteHorario(pool, campaignId, smtpConfigId, limiteCampana, limiteCuenta) {
+  const ahora = Date.now();
+  let esperaMs = 0;
+  let motivo = '';
+
+  // Devuelve los ms que faltan para que se libere un hueco, o 0 si hay sitio.
+  const evaluar = async (sql, params, limite, etiqueta) => {
+    if (!limite || limite <= 0) return;
+    const [[fila]] = await pool.query(sql, params);
+    const enviados = Number(fila?.enviados || 0);
+    if (enviados < limite) return;
+
+    // Ventana llena: el hueco se abre cuando el más antiguo cumple 1 hora.
+    const masAntiguo = fila?.mas_antiguo ? new Date(fila.mas_antiguo).getTime() : ahora;
+    const libreEn = masAntiguo + 3_600_000;
+    // Mínimo 30 s para no reintentar en bucle si el reloj queda justo.
+    const espera = Math.max(30_000, libreEn - ahora);
+
+    if (espera > esperaMs) {
+      esperaMs = espera;
+      motivo = `${etiqueta}: ${enviados}/${limite} en la última hora`;
+    }
+  };
+
+  await evaluar(
+    `SELECT COUNT(*) AS enviados, MIN(enviado_en) AS mas_antiguo
+     FROM campaign_sends
+     WHERE campaign_id = ? AND estado = 'enviado'
+       AND enviado_en >= DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
+    [campaignId], limiteCampana, 'límite de la campaña'
+  );
+
+  if (smtpConfigId) {
+    await evaluar(
+      `SELECT COUNT(*) AS enviados, MIN(enviado_en) AS mas_antiguo
+       FROM campaign_sends
+       WHERE smtp_config_id = ? AND estado = 'enviado'
+         AND enviado_en >= DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
+      [smtpConfigId], limiteCuenta, 'límite de la cuenta SMTP'
+    );
+  }
+
+  // Techo de 1 hora por reintento: si la espera fuese mayor, se reevalúa antes.
+  return {
+    permitido: esperaMs === 0,
+    esperaMs: Math.min(esperaMs, 3_600_000),
+    motivo,
+  };
+}
+
+/**
+ * Reencola un job diferido por el límite horario.
+ * No se usa `throw` porque eso consumiría los reintentos de Bull, que están
+ * reservados para errores reales de envío.
+ */
+async function diferirEnvio(job, esperaMs, motivo) {
+  const cola = await inicializarCola();
+  const { campaignId, sendId } = job.data;
+
+  // Contador de diferimientos para que el jobId sea único en cada reintento.
+  const intento = (job.data.diferimientos || 0) + 1;
+
+  await cola.add('send-email', { ...job.data, diferimientos: intento }, {
+    delay: esperaMs,
+    attempts: job.opts.attempts,
+    backoff: job.opts.backoff,
+    jobId: `send_${campaignId}_${sendId}_dif${intento}`,
+  });
+
+  // Aviso al usuario, como mucho una vez por minuto y campaña.
+  const ultimo = ultimoAvisoDiferido.get(campaignId) || 0;
+  if (Date.now() - ultimo > MS_ENTRE_AVISOS) {
+    ultimoAvisoDiferido.set(campaignId, Date.now());
+    const minutos = Math.ceil(esperaMs / 60_000);
+    socketService.emitirLog(
+      campaignId, 'warning',
+      `Límite horario alcanzado (${motivo}). Los envíos continúan en ~${minutos} min.`
+    );
+    logger.info(`Campaña ${campaignId}: envíos diferidos ${minutos} min — ${motivo}`);
+  }
+}
+
 /**
  * Inicializa la cola Bull. Se llama una vez al arrancar el servidor.
  */
@@ -121,6 +225,28 @@ async function procesarEnvio(job) {
     );
     if (!camp || !['enviando'].includes(camp.estado)) {
       return { skipped: true, motivo: `Campaña en estado: ${camp?.estado}` };
+    }
+
+    // ── Compuerta de límite horario ──
+    // Barrera real: si la ventana móvil de 60 min está llena (por campaña o por
+    // cuenta SMTP), el job se difiere hasta que se libere un hueco. El send
+    // sigue 'pendiente', así que no se pierde ningún correo.
+    const throttleGlobal = await settingsService.getThrottle();
+    const [[limCamp]] = await pool.query(
+      'SELECT emails_por_hora FROM campaigns WHERE id = ?',
+      [campaignId]
+    );
+    const limiteCampana = Math.min(
+      limCamp?.emails_por_hora || throttleGlobal.emails_por_hora,
+      throttleGlobal.emails_por_hora
+    );
+
+    const gate = await verificarLimiteHorario(
+      pool, campaignId, smtpConfig?.id, limiteCampana, throttleGlobal.emails_por_hora
+    );
+    if (!gate.permitido) {
+      await diferirEnvio(job, gate.esperaMs, gate.motivo);
+      return { skipped: true, motivo: `Diferido por límite horario (${gate.motivo})` };
     }
 
     // Verificar lista negra
@@ -329,6 +455,7 @@ async function emitirProgresoActual(pool, campaignId) {
 
     // Cerrar el pool SMTP y liberar sus conexiones
     cerrarTodosLosTransporters();
+    ultimoAvisoDiferido.delete(campaignId);
   }
 }
 
@@ -426,7 +553,18 @@ async function encolarCampaña(campaignId) {
   const throttleGlobal = await settingsService.getThrottle();
   const emailsPorMinCampaña = campaña.emails_por_min || throttleGlobal.emails_por_min || 20;
   const emailsPorMin = Math.min(emailsPorMinCampaña, throttleGlobal.emails_por_min);
-  const delayBaseMs = Math.ceil(60000 / emailsPorMin); // ms entre emails
+
+  // El límite por hora también acota el espaciado: si emails_por_min permitiera
+  // más de emails_por_hora en 60 min, manda el segundo. Así el plan de encolado
+  // respeta ambos topes por construcción y la compuerta en tiempo de envío
+  // queda como red de seguridad (imprescindible cuando varias campañas
+  // comparten cuenta SMTP, algo que aquí no se puede prever).
+  const emailsPorHoraCampaña = campaña.emails_por_hora || throttleGlobal.emails_por_hora;
+  const emailsPorHora = Math.min(emailsPorHoraCampaña, throttleGlobal.emails_por_hora);
+
+  const espaciadoPorMin = Math.ceil(60_000 / emailsPorMin);
+  const espaciadoPorHora = emailsPorHora > 0 ? Math.ceil(3_600_000 / emailsPorHora) : 0;
+  const delayBaseMs = Math.max(espaciadoPorMin, espaciadoPorHora); // ms entre emails
 
   // Jitter: randomización ±jitter_pct sobre el intervalo base para un patrón menos robótico.
   const jitterPct = Math.max(0, Math.min(100, throttleGlobal.jitter_pct || 0));
@@ -485,11 +623,18 @@ async function encolarCampaña(campaignId) {
     [campaignId]
   );
 
+  // Ritmo real resultante tras aplicar ambos topes.
+  const ritmoEfectivoPorMin = Math.floor(60_000 / delayBaseMs) || 1;
+
   socketService.emitirLog(campaignId, 'info',
-    `${sends.length} emails encolados. Velocidad: ${emailsPorMin}/min.`
+    `${sends.length} emails encolados. Ritmo: ~${ritmoEfectivoPorMin}/min ` +
+    `(topes: ${emailsPorMin}/min, ${emailsPorHora}/hora).`
   );
 
-  logger.info(`Campaña ${campaignId}: ${sends.length} emails encolados a ${emailsPorMin}/min`);
+  logger.info(
+    `Campaña ${campaignId}: ${sends.length} emails encolados a ~${ritmoEfectivoPorMin}/min ` +
+    `(topes ${emailsPorMin}/min, ${emailsPorHora}/hora)`
+  );
   return { encolados: sends.length };
 }
 
@@ -700,4 +845,5 @@ module.exports = {
   estadisticasCola,
   cerrarTransporter,
   cerrarTodosLosTransporters,
+  verificarLimiteHorario, // exportada para pruebas
 };
