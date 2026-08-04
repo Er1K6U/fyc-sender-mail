@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Gauge, ShieldCheck, Timer, Shuffle, TrendingUp, Sparkles,
-  Loader2, Info, Layers,
+  Loader2, Info, Layers, Plug, AlertTriangle,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,9 @@ const RECOMENDADOS = {
   emails_por_hora: '200',
   pausa_entre_lotes_ms: '3000',
   jitter_pct: '20',
+  smtp_max_connections: '2',
+  smtp_max_messages: '50',
+  pausa_limite_base_min: '15',
 }
 
 // Tabla de warmup gradual para cuentas nuevas (informativa).
@@ -35,6 +38,9 @@ export default function EnvioTab() {
     pausa_entre_lotes_ms: '',
     jitter_pct: '',
     warmup_activo: true,
+    smtp_max_connections: '',
+    smtp_max_messages: '',
+    pausa_limite_base_min: '',
   })
   const [cargando, setCargando] = useState(true)
   const [guardando, setGuardando] = useState(false)
@@ -50,6 +56,9 @@ export default function EnvioTab() {
         pausa_entre_lotes_ms: String(t.pausa_entre_lotes_ms),
         jitter_pct: String(t.jitter_pct),
         warmup_activo: t.warmup_activo,
+        smtp_max_connections: String(t.smtp_max_connections),
+        smtp_max_messages: String(t.smtp_max_messages),
+        pausa_limite_base_min: String(t.pausa_limite_base_min),
       })
     } catch {
       mostrar('error', 'Error al cargar la configuración de envío')
@@ -74,6 +83,9 @@ export default function EnvioTab() {
         pausa_entre_lotes_ms: parseInt(form.pausa_entre_lotes_ms),
         jitter_pct: parseInt(form.jitter_pct),
         warmup_activo: form.warmup_activo,
+        smtp_max_connections: parseInt(form.smtp_max_connections),
+        smtp_max_messages: parseInt(form.smtp_max_messages),
+        pausa_limite_base_min: parseInt(form.pausa_limite_base_min),
       })
       mostrar('success', 'Configuración de envío guardada')
     } catch (err: any) {
@@ -165,6 +177,72 @@ export default function EnvioTab() {
             />
             <span className="text-sm">Mostrar guía de warmup gradual en esta página</span>
           </label>
+
+        </CardContent>
+      </Card>
+
+      {/* ── Conexión SMTP (pooling) ── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
+              <Plug className="h-4 w-4 text-primary" />
+            </div>
+            <div>
+              <CardTitle>Conexión SMTP (pooling)</CardTitle>
+              <CardDescription>
+                Reutilización de la conexión para evitar bloqueos por exceso de logins.
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-5">
+          <div className="flex items-start gap-2 rounded-lg bg-orange-500/5 border border-orange-500/20 p-3 text-xs text-muted-foreground">
+            <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0 mt-0.5" />
+            <span>
+              Gmail admite muy pocas conexiones autenticadas a la vez. Valores altos provocan el error{' '}
+              <code className="text-orange-400">454-4.7.0 Too many login attempts</code>. Se recomienda{' '}
+              <strong>1-2 conexiones</strong> y reciclar la conexión cada <strong>50 mensajes</strong>.
+            </span>
+          </div>
+
+          <div className="grid sm:grid-cols-3 gap-4">
+            <Input
+              label="Conexiones simultáneas"
+              type="number"
+              min={1}
+              max={10}
+              value={form.smtp_max_connections}
+              onChange={e => setForm({ ...form, smtp_max_connections: e.target.value })}
+            />
+            <Input
+              label="Mensajes por conexión"
+              type="number"
+              min={1}
+              max={500}
+              value={form.smtp_max_messages}
+              onChange={e => setForm({ ...form, smtp_max_messages: e.target.value })}
+            />
+            <Input
+              label="Pausa tras error 454 (min)"
+              type="number"
+              min={1}
+              max={240}
+              value={form.pausa_limite_base_min}
+              onChange={e => setForm({ ...form, pausa_limite_base_min: e.target.value })}
+            />
+          </div>
+
+          <div className="flex items-start gap-2 rounded-lg bg-primary/5 border border-primary/15 p-3 text-xs text-muted-foreground">
+            <Info className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+            <span>
+              Si Gmail responde con un <strong>454</strong>, la campaña se <strong>pausa automáticamente</strong>{' '}
+              durante ese tiempo y se reanuda sola. Si vuelve a ocurrir, la espera se duplica
+              (backoff progresivo, hasta 8× la pausa base). El número de conexiones también define
+              cuántos correos se procesan en paralelo.
+            </span>
+          </div>
 
           <div className="flex justify-end pt-2">
             <Button onClick={guardar} loading={guardando}>Guardar configuración</Button>

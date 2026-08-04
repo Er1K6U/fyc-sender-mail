@@ -1,10 +1,27 @@
 const nodemailer = require('nodemailer');
 
+// Opciones de pool por defecto: conservadoras para Gmail.
+// Gmail admite muy pocas conexiones autenticadas simultáneas; abrir muchas
+// (o reciclarlas de golpe) dispara "454-4.7.0 Too many login attempts".
+const POOL_DEFAULTS = {
+  pool: true,
+  maxConnections: 2,
+  maxMessages: 50,
+  rateDelta: 60_000,
+  rateLimit: 20,
+};
+
 /**
  * Crea un transporter de Nodemailer a partir de una configuración SMTP de la DB.
  * La contraseña se espera ya desencriptada.
+ *
+ * @param {Object} config       Configuración SMTP (host, puerto, credenciales...)
+ * @param {Object} opcionesPool Opciones de pooling que sobreescriben los defaults
+ *                              (normalmente vienen de la configuración global).
  */
-function crearTransporter(config) {
+function crearTransporter(config, opcionesPool = {}) {
+  const pool = { ...POOL_DEFAULTS, ...opcionesPool };
+
   return nodemailer.createTransport({
     host: config.host,
     port: config.puerto,
@@ -16,17 +33,49 @@ function crearTransporter(config) {
     tls: {
       rejectUnauthorized: process.env.NODE_ENV === 'production',
     },
-    pool: true,
-    maxConnections: 5,
-    maxMessages: 100,
+    // ── Connection pooling ──
+    // Una sola conexión (o dos) reutilizada para todos los correos, en lugar de
+    // autenticar repetidamente. maxMessages recicla la conexión de forma suave.
+    pool: pool.pool,
+    maxConnections: pool.maxConnections,
+    maxMessages: pool.maxMessages,
+    // Segunda barrera de throttling a nivel de pool: N mensajes por rateDelta ms.
+    rateDelta: pool.rateDelta,
+    rateLimit: pool.rateLimit,
   });
+}
+
+/**
+ * Detecta errores de límite de autenticación/conexión del proveedor SMTP.
+ * Gmail: "454-4.7.0 Too many login attempts, please try again later".
+ * También cubre 421 (demasiadas conexiones concurrentes), de la misma familia.
+ *
+ * @returns {boolean} true si conviene pausar y esperar en vez de reintentar ya.
+ */
+function esErrorLimiteProveedor(error) {
+  if (!error) return false;
+
+  const codigo = error.responseCode || error.code;
+  if (codigo === 454 || codigo === 421) return true;
+
+  const texto = `${error.response || ''} ${error.message || ''}`.toLowerCase();
+
+  return (
+    texto.includes('too many login attempts') ||
+    texto.includes('too many concurrent connections') ||
+    texto.includes('4.7.0') ||
+    /\b454\b/.test(texto) ||
+    texto.includes('try again later')
+  );
 }
 
 /**
  * Verifica que una configuración SMTP es válida enviando un email de prueba.
  */
 async function verificarConexion(config, emailDestino) {
-  const transporter = crearTransporter(config);
+  // Test puntual: sin pool, para no dejar conexiones abiertas ni consumir
+  // cupo de autenticación de la cuenta.
+  const transporter = crearTransporter(config, { pool: false });
 
   try {
     await transporter.verify();
@@ -85,6 +134,9 @@ function interpretarErrorSMTP(error) {
   if (msg.includes('Daily user sending quota exceeded')) {
     return 'Límite diario de Gmail alcanzado. Espera 24 horas o usa otra cuenta.';
   }
+  if (esErrorLimiteProveedor(error)) {
+    return 'Gmail rechazó temporalmente la conexión por demasiados intentos de login. Espera unos minutos antes de reintentar.';
+  }
   return `Error SMTP: ${msg}`;
 }
 
@@ -110,8 +162,20 @@ async function enviarEmail(transporter, opciones) {
 
     return { ok: true, messageId: info.messageId };
   } catch (error) {
-    return { ok: false, error: error.message };
+    return {
+      ok: false,
+      error: error.message,
+      // Señal para que la cola pause la campaña en vez de reintentar de inmediato.
+      limiteProveedor: esErrorLimiteProveedor(error),
+      codigo: error.responseCode || error.code || null,
+    };
   }
 }
 
-module.exports = { crearTransporter, verificarConexion, enviarEmail };
+module.exports = {
+  crearTransporter,
+  verificarConexion,
+  enviarEmail,
+  esErrorLimiteProveedor,
+  interpretarErrorSMTP,
+};

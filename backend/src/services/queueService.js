@@ -2,7 +2,7 @@ const Bull = require('bull');
 const { v4: uuid } = require('uuid');
 const { db } = require('../config/database');
 const { getRedisOpciones } = require('../config/redis');
-const { crearTransporter, enviarEmail } = require('./smtpService');
+const { crearTransporter, enviarEmail, esErrorLimiteProveedor } = require('./smtpService');
 const socketService = require('./socketService');
 const settingsService = require('./settingsService');
 const logger = require('../config/logger');
@@ -10,21 +10,53 @@ const logger = require('../config/logger');
 // ── Cola principal de envío de emails ────────────────────────────────────────
 let emailQueue = null;
 
-// Mapa de transporters activos por smtp_config_id (reutilizados entre jobs)
+// Mapa de transporters activos por smtp_config_id.
+// UN solo transporter (con pool interno) por cuenta SMTP, reutilizado por todos
+// los correos de la campaña. Nunca se crea uno nuevo por email.
 const transporterCache = new Map();
 
-function getOrCreateTransporter(smtpConfig) {
+async function getOrCreateTransporter(smtpConfig) {
   const cacheKey = smtpConfig.id;
   if (!transporterCache.has(cacheKey)) {
-    transporterCache.set(cacheKey, crearTransporter(smtpConfig));
+    // Las opciones de pooling salen de la configuración global (Ajustes).
+    const opcionesPool = await settingsService.getPoolOpciones();
+    transporterCache.set(cacheKey, crearTransporter(smtpConfig, opcionesPool));
+    logger.info(
+      `Transporter SMTP creado para config ${cacheKey} ` +
+      `(pool: ${opcionesPool.maxConnections} conexiones, ` +
+      `${opcionesPool.maxMessages} msg/conexión, ${opcionesPool.rateLimit}/min)`
+    );
   }
   return transporterCache.get(cacheKey);
 }
 
 /**
+ * Cierra y descarta el transporter de una cuenta SMTP, liberando sus conexiones.
+ * Se llama al completar una campaña o al pausar por límite del proveedor.
+ */
+function cerrarTransporter(smtpConfigId) {
+  const transporter = transporterCache.get(smtpConfigId);
+  if (transporter) {
+    try {
+      transporter.close();
+    } catch (error) {
+      logger.warn(`Error al cerrar transporter ${smtpConfigId}: ${error.message}`);
+    }
+    transporterCache.delete(smtpConfigId);
+  }
+}
+
+/** Cierra todos los transporters activos. */
+function cerrarTodosLosTransporters() {
+  for (const id of [...transporterCache.keys()]) {
+    cerrarTransporter(id);
+  }
+}
+
+/**
  * Inicializa la cola Bull. Se llama una vez al arrancar el servidor.
  */
-function inicializarCola() {
+async function inicializarCola() {
   if (emailQueue) return emailQueue;
 
   const redisOpts = getRedisOpciones();
@@ -37,8 +69,14 @@ function inicializarCola() {
     },
   });
 
-  // Registrar el procesador de jobs
-  emailQueue.process('send-email', 5, procesarEnvio); // 5 workers concurrentes
+  // La concurrencia de workers se alinea con maxConnections del pool SMTP.
+  // Si hubiera más workers que conexiones, Bull generaría ráfagas de envío que
+  // fuerzan al pool a abrir/reciclar conexiones y disparan el 454 de Gmail.
+  const { maxConnections } = await settingsService.getPoolOpciones();
+  const concurrencia = Math.max(1, maxConnections);
+
+  emailQueue.process('send-email', concurrencia, procesarEnvio);
+  logger.info(`Cola procesando con ${concurrencia} worker(s) concurrente(s)`);
 
   // Eventos globales de la cola
   emailQueue.on('error', (error) => {
@@ -130,8 +168,8 @@ async function procesarEnvio(job) {
     // Generar Message-ID único
     const messageId = `<${uuid()}@${fromEmail.split('@')[1]}>`;
 
-    // Enviar
-    const transporter = getOrCreateTransporter(smtpConfig);
+    // Enviar — el transporter se reutiliza (pool), no se crea uno por email.
+    const transporter = await getOrCreateTransporter(smtpConfig);
     const resultado = await enviarEmail(transporter, {
       fromNombre,
       fromEmail,
@@ -141,6 +179,16 @@ async function procesarEnvio(job) {
       messageId,
       unsubscribeUrl: unsubUrl,
     });
+
+    // ── Límite del proveedor (454 de Gmail) ──
+    // No es un fallo del correo: es la cuenta pidiendo que bajemos el ritmo.
+    // Se pausa toda la campaña y se reanuda automáticamente tras el backoff,
+    // en vez de reintentar y seguir martillando al proveedor.
+    if (!resultado.ok && resultado.limiteProveedor) {
+      await pausarPorLimiteProveedor(campaignId, smtpConfig.id, resultado.error);
+      // El send queda 'pendiente': se reencolará al reanudar.
+      return { skipped: true, motivo: 'Pausada por límite del proveedor SMTP' };
+    }
 
     if (resultado.ok) {
       await marcarEnvio(pool, sendId, 'enviado', null, messageId);
@@ -166,6 +214,13 @@ async function procesarEnvio(job) {
     return { ok: true, messageId: resultado.messageId };
 
   } catch (error) {
+    // Red de seguridad: si el límite del proveedor llega por otra vía (p. ej. al
+    // abrir la conexión), pausar en vez de reintentar y agravar el bloqueo.
+    if (esErrorLimiteProveedor(error)) {
+      await pausarPorLimiteProveedor(campaignId, smtpConfig?.id, error.message);
+      return { skipped: true, motivo: 'Pausada por límite del proveedor SMTP' };
+    }
+
     const esUltimoIntento = job.attemptsMade >= job.opts.attempts - 1;
 
     if (esUltimoIntento) {
@@ -250,8 +305,8 @@ async function emitirProgresoActual(pool, campaignId) {
     });
     socketService.emitirLog(campaignId, 'success', `Campaña completada. ${camp.enviados} enviados, ${camp.fallidos} fallidos.`);
 
-    // Limpiar transporter del cache
-    transporterCache.clear();
+    // Cerrar el pool SMTP y liberar sus conexiones
+    cerrarTodosLosTransporters();
   }
 }
 
@@ -263,7 +318,7 @@ async function emitirProgresoActual(pool, campaignId) {
  */
 async function encolarCampaña(campaignId) {
   const pool = db();
-  const cola = inicializarCola();
+  const cola = await inicializarCola();
 
   const [[campaña]] = await pool.query(
     `SELECT c.*, s.* ,
@@ -354,6 +409,13 @@ async function encolarCampaña(campaignId) {
   // Delay acumulado con jitter aplicado a cada paso (no escalonado fijo).
   let delayAcumulado = 0;
 
+  // Token de ronda para el jobId.
+  // Bull ignora add() si el jobId ya existe —incluso si el job ya se completó—,
+  // y los jobs que se saltaron al pausar quedan en el set de completados. Sin un
+  // discriminante por ronda, al reanudar no se reencolaría nada. El anti-duplicado
+  // real lo garantiza procesarEnvio, que descarta los sends ya marcados 'enviado'.
+  const ronda = Date.now();
+
   // Agregar jobs a Bull con delay escalonado para respetar throttle
   const jobsPromises = sends.map((send) => {
     // Variación aleatoria del intervalo: base * (1 ± jitterPct/100)
@@ -382,16 +444,20 @@ async function encolarCampaña(campaignId) {
         type: 'exponential',
         delay: parseInt(process.env.DEFAULT_RETRY_DELAY_MS) || 5000,
       },
-      jobId: `send_${campaignId}_${send.sendId}`, // idempotencia
+      jobId: `send_${campaignId}_${send.sendId}_${ronda}`, // idempotencia por ronda
     });
   });
 
   await Promise.all(jobsPromises);
 
-  // Actualizar total_envios final
+  // total_envios = TODOS los sends de la campaña, no solo los encolados ahora.
+  // Al reanudar solo se encolan los pendientes; usar sends.length aquí reduciría
+  // el total por debajo de los ya enviados y rompería la barra de progreso.
   await pool.query(
-    `UPDATE campaigns SET total_envios = ? WHERE id = ?`,
-    [sends.length, campaignId]
+    `UPDATE campaigns c
+     SET c.total_envios = (SELECT COUNT(*) FROM campaign_sends WHERE campaign_id = c.id)
+     WHERE c.id = ?`,
+    [campaignId]
   );
 
   socketService.emitirLog(campaignId, 'info',
@@ -409,11 +475,83 @@ async function encolarCampaña(campaignId) {
 async function pausarCampaña(campaignId) {
   const pool = db();
   await pool.query(
-    `UPDATE campaigns SET estado = 'pausada' WHERE id = ? AND estado = 'enviando'`,
+    `UPDATE campaigns
+     SET estado = 'pausada', pausa_motivo = 'manual', reanudar_en = NULL
+     WHERE id = ? AND estado = 'enviando'`,
     [campaignId]
   );
-  socketService.emitirPausada(campaignId);
+  socketService.emitirPausada(campaignId, { motivo: 'manual' });
   socketService.emitirLog(campaignId, 'warning', 'Campaña pausada por el usuario.');
+}
+
+/**
+ * Pausa la campaña tras un error de límite del proveedor (454 de Gmail).
+ *
+ * Criterio del proyecto: proteger la reputación de la cuenta por encima de la
+ * velocidad. Se pausa TODA la campaña (el 454 es a nivel de cuenta, no de un
+ * correo puntual) y se programa una reanudación automática con backoff
+ * progresivo: base, 2×base, 4×base... hasta un tope de 8×base.
+ *
+ * La actualización es condicional (WHERE estado = 'enviando') para que, si
+ * varios workers reciben el 454 a la vez, solo la primera pausa cuente.
+ */
+async function pausarPorLimiteProveedor(campaignId, smtpConfigId, mensajeError) {
+  const pool = db();
+  const baseMin = Math.max(1, await settingsService.getNumero('pausa_limite_base_min'));
+
+  // Nº de pausas previas para calcular el backoff de ESTA pausa.
+  const [[previo]] = await pool.query(
+    'SELECT pausas_por_limite FROM campaigns WHERE id = ?',
+    [campaignId]
+  );
+  const intento = (previo?.pausas_por_limite || 0) + 1;
+
+  // Backoff progresivo con tope: base × 2^(intento-1), máximo 8× base.
+  const factor = Math.min(2 ** (intento - 1), 8);
+  const esperaMin = baseMin * factor;
+
+  const [resultado] = await pool.query(
+    `UPDATE campaigns
+     SET estado = 'pausada',
+         pausa_motivo = 'limite_smtp',
+         pausas_por_limite = pausas_por_limite + 1,
+         ultimo_error_smtp = ?,
+         reanudar_en = DATE_ADD(NOW(), INTERVAL ? MINUTE)
+     WHERE id = ? AND estado = 'enviando'`,
+    [String(mensajeError || '').slice(0, 500), esperaMin, campaignId]
+  );
+
+  // Otro worker ya pausó la campaña: no duplicar aviso ni backoff.
+  if (resultado.affectedRows === 0) return;
+
+  // Liberar las conexiones del pool para que la cuenta "descanse" de verdad.
+  if (smtpConfigId) cerrarTransporter(smtpConfigId);
+
+  const [[camp]] = await pool.query(
+    'SELECT reanudar_en FROM campaigns WHERE id = ?',
+    [campaignId]
+  );
+
+  logger.warn(
+    `Campaña ${campaignId} pausada por límite del proveedor (intento ${intento}). ` +
+    `Reanuda en ${esperaMin} min. Error: ${mensajeError}`
+  );
+
+  socketService.emitirPausada(campaignId, {
+    motivo: 'limite_smtp',
+    reanudar_en: camp?.reanudar_en || null,
+    espera_min: esperaMin,
+    intento,
+    error: mensajeError,
+  });
+
+  socketService.emitirLog(
+    campaignId,
+    'warning',
+    `Gmail limitó los envíos (demasiados intentos de login). Campaña pausada ` +
+    `${esperaMin} minutos para proteger la reputación de la cuenta. ` +
+    `Se reanudará automáticamente.`
+  );
 }
 
 /**
@@ -422,7 +560,9 @@ async function pausarCampaña(campaignId) {
 async function reanudarCampaña(campaignId) {
   const pool = db();
   await pool.query(
-    `UPDATE campaigns SET estado = 'enviando' WHERE id = ? AND estado = 'pausada'`,
+    `UPDATE campaigns
+     SET estado = 'enviando', pausa_motivo = NULL, reanudar_en = NULL
+     WHERE id = ? AND estado = 'pausada'`,
     [campaignId]
   );
   return encolarCampaña(campaignId);
@@ -434,10 +574,13 @@ async function reanudarCampaña(campaignId) {
 async function cancelarCampaña(campaignId) {
   const pool = db();
   await pool.query(
-    `UPDATE campaigns SET estado = 'error', completada_en = NOW()
+    `UPDATE campaigns
+     SET estado = 'error', completada_en = NOW(),
+         pausa_motivo = NULL, reanudar_en = NULL
      WHERE id = ? AND estado IN ('enviando', 'pausada', 'programada')`,
     [campaignId]
   );
+  cerrarTodosLosTransporters();
   socketService.emitirError(campaignId, 'Campaña cancelada por el usuario.');
 }
 
@@ -464,6 +607,26 @@ function iniciarScheduler() {
           logger.error(`Error al encolar campaña ${camp.id}:`, err)
         );
       }
+
+      // Reanudar campañas pausadas por límite del proveedor cuyo backoff ya venció.
+      const [porReanudar] = await pool.query(
+        `SELECT id FROM campaigns
+         WHERE estado = 'pausada'
+           AND pausa_motivo = 'limite_smtp'
+           AND reanudar_en IS NOT NULL
+           AND reanudar_en <= NOW()`
+      );
+
+      for (const camp of porReanudar) {
+        logger.info(`Scheduler: reanudando campaña ${camp.id} tras pausa por límite SMTP`);
+        socketService.emitirLog(
+          camp.id, 'info',
+          'Tiempo de espera cumplido. Reanudando envío automáticamente...'
+        );
+        reanudarCampaña(camp.id).catch(err =>
+          logger.error(`Error al reanudar campaña ${camp.id}:`, err)
+        );
+      }
     } catch (error) {
       logger.error('Error en scheduler de campañas:', error);
     }
@@ -479,7 +642,7 @@ function iniciarScheduler() {
  * Obtiene estadísticas de la cola Bull.
  */
 async function estadisticasCola() {
-  const cola = inicializarCola();
+  const cola = await inicializarCola();
   const [waiting, active, completed, failed, delayed] = await Promise.all([
     cola.getWaitingCount(),
     cola.getActiveCount(),
@@ -494,8 +657,11 @@ module.exports = {
   inicializarCola,
   encolarCampaña,
   pausarCampaña,
+  pausarPorLimiteProveedor,
   reanudarCampaña,
   cancelarCampaña,
   iniciarScheduler,
   estadisticasCola,
+  cerrarTransporter,
+  cerrarTodosLosTransporters,
 };

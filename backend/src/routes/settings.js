@@ -33,11 +33,20 @@ router.put(
     body('pausa_entre_lotes_ms').isInt({ min: 0, max: 600000 }).withMessage('Pausa: 0-600000 ms'),
     body('jitter_pct').isInt({ min: 0, max: 100 }).withMessage('Jitter: 0-100%'),
     body('warmup_activo').optional().isBoolean(),
+    body('smtp_max_connections').isInt({ min: 1, max: 10 })
+      .withMessage('Conexiones SMTP: 1-10 (recomendado 1-2 para Gmail)'),
+    body('smtp_max_messages').isInt({ min: 1, max: 500 })
+      .withMessage('Mensajes por conexión: 1-500 (recomendado 50)'),
+    body('pausa_limite_base_min').isInt({ min: 1, max: 240 })
+      .withMessage('Pausa base tras error 454: 1-240 minutos'),
   ],
   validarCampos,
   async (req, res, next) => {
     try {
-      const { emails_por_min, emails_por_hora, pausa_entre_lotes_ms, jitter_pct, warmup_activo } = req.body;
+      const {
+        emails_por_min, emails_por_hora, pausa_entre_lotes_ms, jitter_pct, warmup_activo,
+        smtp_max_connections, smtp_max_messages, pausa_limite_base_min,
+      } = req.body;
 
       // Coherencia: emails_por_hora no debería ser menor que emails_por_min
       if (emails_por_hora < emails_por_min) {
@@ -51,11 +60,18 @@ router.put(
         throttle_emails_por_hora: emails_por_hora,
         throttle_pausa_entre_lotes_ms: pausa_entre_lotes_ms,
         throttle_jitter_pct: jitter_pct,
+        smtp_max_connections,
+        smtp_max_messages,
+        pausa_limite_base_min,
         ...(warmup_activo !== undefined ? { warmup_activo: warmup_activo ? 1 : 0 } : {}),
       });
 
       const throttle = await settingsService.getThrottle();
-      res.json({ throttle, mensaje: 'Configuración de envío actualizada' });
+      res.json({
+        throttle,
+        mensaje: 'Configuración de envío actualizada. Los cambios de pooling SMTP ' +
+                 'se aplican a las campañas que se inicien a partir de ahora.',
+      });
     } catch (error) {
       next(error);
     }

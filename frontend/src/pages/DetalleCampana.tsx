@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, Play, Pause, XCircle, CheckCircle2,
   Clock, Send, Zap, BarChart2,
-  RefreshCw, Eye, MousePointerClick,
+  RefreshCw, Eye, MousePointerClick, ShieldAlert,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,6 +20,11 @@ interface Campana {
   abiertos: number; clicks: number; programada_para?: string; completada_en?: string
   emails_por_min: number; lista_nombre?: string; smtp_nombre?: string
   created_at: string
+  // Pausa automática por límite del proveedor SMTP (454 de Gmail)
+  pausa_motivo?: string | null
+  reanudar_en?: string | null
+  pausas_por_limite?: number
+  ultimo_error_smtp?: string | null
 }
 
 interface SendRow {
@@ -55,6 +60,18 @@ function formatEta(seg: number | null) {
   if (seg < 60) return `${seg}s`
   if (seg < 3600) return `${Math.ceil(seg / 60)}min`
   return `${Math.floor(seg / 3600)}h ${Math.ceil((seg % 3600) / 60)}min`
+}
+
+/** Formatea segundos restantes como mm:ss (o h:mm:ss si supera la hora). */
+function formatCuentaAtras(seg: number) {
+  if (seg <= 0) return '00:00'
+  const h = Math.floor(seg / 3600)
+  const m = Math.floor((seg % 3600) / 60)
+  const s = seg % 60
+  const dosDigitos = (n: number) => String(n).padStart(2, '0')
+  return h > 0
+    ? `${h}:${dosDigitos(m)}:${dosDigitos(s)}`
+    : `${dosDigitos(m)}:${dosDigitos(s)}`
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
@@ -130,8 +147,22 @@ export default function DetalleCampana() {
       setCampana(prev => prev ? { ...prev, estado: 'completada', completada_en: data.completada_en } : null)
       mostrar('success', '¡Campaña completada!')
     },
-    'campaign:paused': () => {
-      setCampana(prev => prev ? { ...prev, estado: 'pausada' } : null)
+    'campaign:paused': (data: any) => {
+      setCampana(prev => prev ? {
+        ...prev,
+        estado: 'pausada',
+        pausa_motivo: data?.motivo ?? prev.pausa_motivo,
+        reanudar_en: data?.reanudar_en ?? null,
+        ultimo_error_smtp: data?.error ?? prev.ultimo_error_smtp,
+        pausas_por_limite: data?.intento ?? prev.pausas_por_limite,
+      } : null)
+      if (data?.motivo === 'limite_smtp') {
+        mostrar(
+          'warning',
+          'Pausada por límite de Gmail',
+          `Se reanudará automáticamente en ${data.espera_min} minutos.`
+        )
+      }
     },
     'campaign:error': (msg: string) => {
       setCampana(prev => prev ? { ...prev, estado: 'error' } : null)
@@ -149,6 +180,35 @@ export default function DetalleCampana() {
   useEffect(() => {
     if (logsRef.current) logsRef.current.scrollTop = 0
   }, [logs])
+
+  // ── Cuenta regresiva de la pausa automática por límite del proveedor ──
+  const pausadaPorLimite =
+    campana?.estado === 'pausada' && campana?.pausa_motivo === 'limite_smtp'
+  const [segundosRestantes, setSegundosRestantes] = useState(0)
+  const recargaLanzada = useRef(false)
+
+  useEffect(() => {
+    if (!pausadaPorLimite || !campana?.reanudar_en) {
+      setSegundosRestantes(0)
+      return
+    }
+    recargaLanzada.current = false
+    const objetivo = new Date(campana.reanudar_en).getTime()
+
+    const tick = () => {
+      const restante = Math.max(0, Math.ceil((objetivo - Date.now()) / 1000))
+      setSegundosRestantes(restante)
+      // Al vencer, recargar una sola vez: el scheduler ya debería haber reanudado.
+      if (restante === 0 && !recargaLanzada.current) {
+        recargaLanzada.current = true
+        setTimeout(cargar, 2000)
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [pausadaPorLimite, campana?.reanudar_en])
 
   const accion = async (endpoint: string, mensaje: string) => {
     try {
@@ -184,7 +244,11 @@ export default function DetalleCampana() {
     )
   }
 
-  const cfg = ESTADO_CAMPANA[campana.estado] || ESTADO_CAMPANA.borrador
+  const cfgBase = ESTADO_CAMPANA[campana.estado] || ESTADO_CAMPANA.borrador
+  // Distinguir la pausa automática del proveedor de una pausa manual.
+  const cfg = pausadaPorLimite
+    ? { ...cfgBase, label: 'Pausada por límite de Gmail' }
+    : cfgBase
   const porcentaje = progreso.total > 0
     ? Math.min(100, Math.round(((progreso.enviados + progreso.fallidos) / progreso.total) * 100))
     : 0
@@ -242,6 +306,58 @@ export default function DetalleCampana() {
           )}
         </div>
       </div>
+
+      {/* Aviso de pausa automática por límite del proveedor (454 de Gmail) */}
+      {pausadaPorLimite && (
+        <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-orange-500/15 flex items-center justify-center shrink-0">
+              <ShieldAlert className="h-5 w-5 text-orange-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-semibold text-orange-400">
+                  Pausada por límite de Gmail
+                </h3>
+                {(campana.pausas_por_limite ?? 0) > 1 && (
+                  <Badge variant="orange" className="text-[10px]">
+                    Pausa nº {campana.pausas_por_limite}
+                  </Badge>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                Gmail está limitando los envíos por demasiados intentos de conexión. La campaña se pausó
+                automáticamente para <strong>proteger la reputación de la cuenta</strong> — no se ha roto nada
+                y no se ha perdido ningún correo. Se reanudará sola cuando termine la espera.
+              </p>
+
+              {segundosRestantes > 0 ? (
+                <div className="flex items-center gap-2 mt-3">
+                  <Clock className="h-4 w-4 text-orange-400" />
+                  <span className="text-sm text-muted-foreground">Reanudación automática en</span>
+                  <span className="font-mono font-bold text-lg text-orange-400 tabular-nums">
+                    {formatCuentaAtras(segundosRestantes)}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 mt-3">
+                  <RefreshCw className="h-4 w-4 text-orange-400 animate-spin" />
+                  <span className="text-sm text-muted-foreground">
+                    Reanudando el envío...
+                  </span>
+                </div>
+              )}
+
+              {campana.ultimo_error_smtp && (
+                <p className="text-[11px] text-muted-foreground/70 mt-2 font-mono truncate"
+                   title={campana.ultimo_error_smtp}>
+                  {campana.ultimo_error_smtp}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Barra de progreso grande */}
       {progreso.total > 0 && (

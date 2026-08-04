@@ -12,6 +12,10 @@ const DEFAULTS = {
   throttle_pausa_entre_lotes_ms: 3000,
   throttle_jitter_pct: 20,
   warmup_activo: 1,
+  // Pooling SMTP — valores conservadores para no disparar el 454 de Gmail.
+  smtp_max_connections: 2,
+  smtp_max_messages: 50,
+  pausa_limite_base_min: 15,
 };
 
 // Claves que se exponen/editan como configuración de throttling.
@@ -21,6 +25,9 @@ const CLAVES_THROTTLE = [
   'throttle_pausa_entre_lotes_ms',
   'throttle_jitter_pct',
   'warmup_activo',
+  'smtp_max_connections',
+  'smtp_max_messages',
+  'pausa_limite_base_min',
 ];
 
 /**
@@ -64,6 +71,26 @@ async function getThrottle() {
     pausa_entre_lotes_ms: await getNumero('throttle_pausa_entre_lotes_ms'),
     jitter_pct: await getNumero('throttle_jitter_pct'),
     warmup_activo: (await getNumero('warmup_activo')) === 1,
+    smtp_max_connections: await getNumero('smtp_max_connections'),
+    smtp_max_messages: await getNumero('smtp_max_messages'),
+    pausa_limite_base_min: await getNumero('pausa_limite_base_min'),
+  };
+}
+
+/**
+ * Opciones de pooling para Nodemailer derivadas de la configuración global.
+ * El rateLimit se deriva de emails_por_min para que el propio pool actúe como
+ * segunda barrera de throttling, aunque Bull libere varios jobs a la vez.
+ */
+async function getPoolOpciones() {
+  const emailsPorMin = await getNumero('throttle_emails_por_min');
+  return {
+    pool: true,
+    maxConnections: Math.max(1, await getNumero('smtp_max_connections')),
+    maxMessages: Math.max(1, await getNumero('smtp_max_messages')),
+    // Nodemailer aplica rateLimit mensajes por cada rateDelta milisegundos.
+    rateDelta: 60_000,
+    rateLimit: Math.max(1, emailsPorMin),
   };
 }
 
@@ -92,6 +119,7 @@ module.exports = {
   getTodas,
   getNumero,
   getThrottle,
+  getPoolOpciones,
   setVarias,
   cargarCache,
 };

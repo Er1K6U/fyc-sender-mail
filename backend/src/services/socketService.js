@@ -72,10 +72,14 @@ function emitirError(campaignId, mensaje) {
   io.to(`campaign:${campaignId}`).emit('campaign:error', { campaignId, mensaje });
 }
 
-/** Campaña pausada */
-function emitirPausada(campaignId) {
+/**
+ * Campaña pausada.
+ * `datos` puede incluir { motivo: 'manual' | 'limite_smtp', reanudar_en,
+ * espera_min, intento, error } para que la UI explique qué está pasando.
+ */
+function emitirPausada(campaignId, datos = {}) {
   if (!io) return;
-  io.to(`campaign:${campaignId}`).emit('campaign:paused', { campaignId });
+  io.to(`campaign:${campaignId}`).emit('campaign:paused', { campaignId, ...datos });
 }
 
 /** Log de actividad en tiempo real */

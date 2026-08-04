@@ -16,4 +16,8 @@ export interface ThrottleConfig {
   pausa_entre_lotes_ms: number
   jitter_pct: number
   warmup_activo: boolean
+  // Pooling SMTP — conservador para evitar el error 454 de Gmail
+  smtp_max_connections: number
+  smtp_max_messages: number
+  pausa_limite_base_min: number
 }
