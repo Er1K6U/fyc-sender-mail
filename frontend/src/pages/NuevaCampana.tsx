@@ -60,22 +60,41 @@ export default function NuevaCampana() {
     smtp_config_id: '',
     plantilla_id: '',
     html_content: '',
-    emails_por_min: '30',
-    emails_por_hora: '500',
+    // Se sobreescriben con la configuración global al cargar. El valor inicial
+    // es conservador a propósito, por si la petición de settings falla.
+    emails_por_min: '20',
+    emails_por_hora: '200',
     modo_envio: 'inmediato',
     programada_para: '',
   })
 
+  // Límites globales (Ajustes → Envío). Precargan el formulario y actúan como
+  // tope máximo: el backend recorta cualquier valor superior al global.
+  const [limites, setLimites] = useState({ emails_por_min: 20, emails_por_hora: 200 })
+
   useEffect(() => {
     const cargar = async () => {
-      const [rListas, rSmtp, rPlantillas] = await Promise.all([
+      const [rListas, rSmtp, rPlantillas, rDefaults] = await Promise.all([
         api.get('/listas'),
         api.get('/smtp'),
         api.get('/plantillas'),
+        api.get('/settings/campana-defaults'),
       ])
       setListas(rListas.data.listas ?? [])
       setSmtpConfigs(rSmtp.data.smtp_configs ?? [])   // backend retorna smtp_configs, no configs
       setPlantillas(rPlantillas.data.plantillas ?? [])
+
+      // Precargar throttling desde la configuración global (comportamiento
+      // "Default + Cap": el global rellena el formulario y además es el techo).
+      const globalMin = Number(rDefaults.data.emails_por_min) || 20
+      const globalHora = Number(rDefaults.data.emails_por_hora) || 200
+      setLimites({ emails_por_min: globalMin, emails_por_hora: globalHora })
+      setForm(f => ({
+        ...f,
+        emails_por_min: String(globalMin),
+        emails_por_hora: String(globalHora),
+      }))
+
       // Preseleccionar primer SMTP
       if ((rSmtp.data.smtp_configs ?? []).length > 0) {
         const smtp = rSmtp.data.smtp_configs[0]
@@ -438,11 +457,13 @@ export default function NuevaCampana() {
                       id="epm"
                       type="number"
                       min={1}
-                      max={500}
+                      max={limites.emails_por_min}
                       value={form.emails_por_min}
                       onChange={set('emails_por_min')}
                     />
-                    <p className="text-xs text-muted-foreground">Recomendado: 20-60</p>
+                    <p className="text-xs text-muted-foreground">
+                      Límite global: {limites.emails_por_min}/min (tope máximo)
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="eph">Emails por hora</Label>
@@ -450,13 +471,21 @@ export default function NuevaCampana() {
                       id="eph"
                       type="number"
                       min={1}
-                      max={5000}
+                      max={limites.emails_por_hora}
                       value={form.emails_por_hora}
                       onChange={set('emails_por_hora')}
                     />
-                    <p className="text-xs text-muted-foreground">Gmail Workspace: ≤2000/día</p>
+                    <p className="text-xs text-muted-foreground">
+                      Límite global: {limites.emails_por_hora}/hora
+                    </p>
                   </div>
                 </div>
+
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Los valores vienen de <strong>Ajustes → Envío</strong>. Puedes bajarlos para esta
+                  campaña, pero no superarlos: al enviar, el sistema recorta la velocidad al límite
+                  global de emails/minuto para proteger la reputación de la cuenta.
+                </p>
               </div>
             </div>
           )}

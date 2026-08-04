@@ -4,7 +4,7 @@ const { autenticar, soloAdmin } = require('../middleware/auth');
 const settingsService = require('../services/settingsService');
 
 const router = express.Router();
-router.use(autenticar, soloAdmin);
+router.use(autenticar);
 
 function validarCampos(req, res, next) {
   const errores = validationResult(req);
@@ -13,6 +13,26 @@ function validarCampos(req, res, next) {
   }
   next();
 }
+
+// ── GET /api/settings/campana-defaults ────────────────────────────────────────
+// Accesible a CUALQUIER usuario autenticado (incluido el rol editor): al crear
+// una campaña se necesitan los valores globales para precargar el formulario y
+// para saber cuál es el tope máximo. Expone solo esos dos números, no el resto
+// de la configuración de administración.
+router.get('/campana-defaults', async (req, res, next) => {
+  try {
+    const throttle = await settingsService.getThrottle();
+    res.json({
+      emails_por_min: throttle.emails_por_min,
+      emails_por_hora: throttle.emails_por_hora,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── A partir de aquí, todo requiere rol admin ────────────────────────────────
+router.use(soloAdmin);
 
 // ── GET /api/settings/throttle ────────────────────────────────────────────────
 router.get('/throttle', async (req, res, next) => {

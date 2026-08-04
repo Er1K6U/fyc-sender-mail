@@ -10,6 +10,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/toast'
 import { formatearFecha, formatearNumero, formatearPorcentaje, cn } from '@/lib/utils'
+import { useAuthStore } from '@/store/authStore'
 import api from '@/lib/api'
 
 interface Campana {
@@ -42,6 +43,7 @@ const ESTADO_CONFIG: Record<string, { label: string; variant: any; icon: React.R
 }
 
 export default function Campanas() {
+  const esAdmin = useAuthStore(s => s.usuario?.rol === 'admin')
   const [campanas, setCampanas] = useState<Campana[]>([])
   const [cargando, setCargando] = useState(true)
   const navigate = useNavigate()
@@ -285,12 +287,14 @@ export default function Campanas() {
                       >
                         <Eye className="h-4 w-4" />
                       </Button>
-                      {!['enviando'].includes(campana.estado) && (
+                      {/* Eliminar campañas está restringido a administradores */}
+                      {esAdmin && !['enviando'].includes(campana.estado) && (
                         <Button
                           size="icon-sm"
                           variant="ghost"
                           onClick={() => handleEliminar(campana.id, campana.nombre)}
                           className="text-muted-foreground hover:text-red-400"
+                          title="Eliminar campaña"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
