@@ -14,6 +14,7 @@ import { formatearFecha, formatearNumero, cn } from '@/lib/utils'
 import ImportarWizard from '@/components/contactos/ImportarWizard'
 import ContactoModal from '@/components/contactos/ContactoModal'
 import ListaModal from '@/components/contactos/ListaModal'
+import { useAuthStore } from '@/store/authStore'
 import api from '@/lib/api'
 import type { Contacto } from '@/types/contacto'
 
@@ -35,6 +36,7 @@ interface Paginacion {
 type EstadoFiltro = 'todos' | 'validos' | 'invalidos' | 'desuscritos'
 
 export default function Contactos() {
+  const esAdmin = useAuthStore(s => s.usuario?.rol === 'admin')
   // ── Listas ──
   const [listas, setListas] = useState<Lista[]>([])
   const [listaActiva, setListaActiva] = useState<number | null>(null)
@@ -226,12 +228,16 @@ export default function Contactos() {
                   >
                     <Edit2 className="h-3 w-3" />
                   </button>
-                  <button
-                    onClick={e => { e.stopPropagation(); handleEliminarLista(lista) }}
-                    className="p-1 hover:text-red-400"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+                  {/* Eliminar una lista entera arrastra sus contactos: solo admin */}
+                  {esAdmin && (
+                    <button
+                      onClick={e => { e.stopPropagation(); handleEliminarLista(lista) }}
+                      className="p-1 hover:text-red-400"
+                      title="Eliminar lista"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))

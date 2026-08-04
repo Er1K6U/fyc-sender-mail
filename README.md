@@ -286,7 +286,8 @@ una hora, momento en que hay un hueco garantizado.
 
 | Recurso | Admin | Editor |
 |---|---|---|
-| Contactos, listas, plantillas | Total | Total (**compartidos** entre todos los usuarios) |
+| Contactos y plantillas | Total | Total (**compartidos** entre todos los usuarios) |
+| Listas | Total | Crear, editar e importar — **no eliminar** |
 | Campañas | Las suyas | Las suyas (no puede eliminar) |
 | Cuentas SMTP | Ve y gestiona **todas** | Solo usa las que tenga **asignadas** |
 | Usuarios, Auditoría, Ajustes | Sí | No (salvo "Mi cuenta") |
@@ -300,8 +301,10 @@ lo determina la tabla `user_smtp_configs`. La restricción se valida en el backe
 asignada.
 
 > **Nota sobre recursos compartidos:** listas, contactos y plantillas son visibles y
-> editables por cualquier usuario autenticado, incluida su eliminación. No hay aislamiento
-> entre usuarios para esos recursos.
+> editables por cualquier usuario autenticado; no hay aislamiento entre usuarios para esos
+> recursos. La excepción es **eliminar una lista entera**, restringido a administradores:
+> el borrado arrastra todos sus contactos por CASCADE y afectaría al trabajo de los demás.
+> Los editores sí pueden crear listas, importar y eliminar contactos individuales.
 
 ---
 

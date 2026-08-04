@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { db } = require('../config/database');
-const { autenticar } = require('../middleware/auth');
+const { autenticar, soloAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(autenticar);
@@ -99,7 +99,10 @@ router.put(
 );
 
 // DELETE /api/listas/:id - Eliminar lista (y sus contactos por CASCADE)
-router.delete('/:id', async (req, res, next) => {
+// Restringido a administradores: como las listas son compartidas, borrar una
+// arrastra todos sus contactos y afecta al trabajo del resto de usuarios.
+// Los editores sí pueden crear listas, importar y borrar contactos sueltos.
+router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [result] = await pool.query(
