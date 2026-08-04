@@ -13,6 +13,8 @@ const {
 const router = express.Router();
 router.use(autenticar);
 
+const acceso = require('../services/accesoService');
+
 function validar(req, res, next) {
   const errores = validationResult(req);
   if (!errores.isEmpty()) {
@@ -46,10 +48,18 @@ router.get(
       } = req.query;
 
       const pool = db();
-      // Los contactos son compartidos, igual que las listas que los contienen:
-      // filtrar por user_id dejaría al editor viendo listas vacías.
+      // La visibilidad de un contacto la determina SU LISTA: se restringe a las
+      // listas que el usuario puede ver (propias o compartidas). El admin no
+      // añade filtro.
       const params = [];
       let where = '1 = 1';
+
+      if (!acceso.esAdmin(req.usuario)) {
+        where += ` AND c.list_id IN (
+          SELECT id FROM contact_lists WHERE user_id = ? OR compartida = 1
+        )`;
+        params.push(req.usuario.id);
+      }
 
       if (list_id) {
         where += ' AND c.list_id = ?';
@@ -128,6 +138,15 @@ router.post(
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
 
+      // Escribir en una lista exige ser su dueño (o admin). Que esté compartida
+      // permite verla y enviarle campañas, no inyectarle contactos.
+      const puedeEscribir = await acceso.puedeEditar('lista', Number(list_id), req.usuario);
+      if (!puedeEscribir) {
+        return res.status(403).json({
+          error: 'No puedes añadir contactos a una lista que no te pertenece',
+        });
+      }
+
       // Verificar que no está en lista negra
       const [[unsub]] = await pool.query(
         'SELECT id FROM unsubscribes WHERE email = ?',
@@ -173,6 +192,10 @@ router.put(
   async (req, res, next) => {
     try {
       const pool = db();
+      // Solo se editan contactos de listas propias (o cualquiera si es admin).
+      const puede = await acceso.puedeEditarContacto(Number(req.params.id), req.usuario);
+      if (!puede) return res.status(404).json({ error: 'Contacto no encontrado' });
+
       const [[contacto]] = await pool.query(
         'SELECT * FROM contacts WHERE id = ?',
         [req.params.id]
@@ -207,6 +230,9 @@ router.put(
 router.delete('/:id', async (req, res, next) => {
   try {
     const pool = db();
+    const puede = await acceso.puedeEditarContacto(Number(req.params.id), req.usuario);
+    if (!puede) return res.status(404).json({ error: 'Contacto no encontrado' });
+
     const [[contacto]] = await pool.query(
       'SELECT list_id FROM contacts WHERE id = ?',
       [req.params.id]
@@ -229,22 +255,29 @@ router.delete('/', [body('ids').isArray({ min: 1 })], validar, async (req, res, 
     const { ids } = req.body;
     const pool = db();
 
+    // Solo se borran los contactos que el usuario puede modificar: los ids
+    // ajenos se descartan en silencio en vez de tumbar toda la operación.
+    const editables = await acceso.filtrarContactosEditables(ids, req.usuario);
+    if (editables.length === 0) {
+      return res.status(404).json({ error: 'Ningún contacto encontrado' });
+    }
+
     // Obtener list_ids afectados antes de borrar
     const [afectados] = await pool.query(
       `SELECT DISTINCT list_id FROM contacts WHERE id IN (?)`,
-      [ids]
+      [editables]
     );
 
     await pool.query(
       'DELETE FROM contacts WHERE id IN (?)',
-      [ids]
+      [editables]
     );
 
     for (const { list_id } of afectados) {
       await actualizarContadores(pool, list_id);
     }
 
-    res.json({ mensaje: `${ids.length} contacto(s) eliminado(s)` });
+    res.json({ mensaje: `${editables.length} contacto(s) eliminado(s)` });
   } catch (error) {
     next(error);
   }
@@ -294,12 +327,20 @@ router.post(
       const { archivo_id, list_id, mapeo } = req.body;
       const pool = db();
 
-      // Verificar que la lista existe (las listas son compartidas)
       const [[lista]] = await pool.query(
         'SELECT id, nombre FROM contact_lists WHERE id = ?',
         [list_id]
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
+
+      // Importar es escritura: exige ser dueño de la lista. Sin esto, un editor
+      // podría inyectar contactos en una lista corporativa compartida.
+      const puedeEscribir = await acceso.puedeEditar('lista', Number(list_id), req.usuario);
+      if (!puedeEscribir) {
+        return res.status(403).json({
+          error: 'No puedes importar contactos a una lista que no te pertenece',
+        });
+      }
 
       // Verificar que el archivo existe
       const rutaArchivo = path.join(UPLOAD_PATH, archivo_id);
@@ -340,6 +381,10 @@ router.post(
 router.post('/:id/desuscribir', async (req, res, next) => {
   try {
     const pool = db();
+
+    const puede = await acceso.puedeEditarContacto(Number(req.params.id), req.usuario);
+    if (!puede) return res.status(404).json({ error: 'Contacto no encontrado' });
+
     const [[contacto]] = await pool.query(
       'SELECT * FROM contacts WHERE id = ?',
       [req.params.id]

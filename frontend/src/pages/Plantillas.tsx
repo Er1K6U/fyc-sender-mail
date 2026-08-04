@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FileText, Plus, Trash2, Copy, Edit2, Eye,
-  Clock, Search, Mail,
+  Clock, Search, Mail, Share2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/toast'
 import { formatearFecha, cn } from '@/lib/utils'
+import { useAuthStore } from '@/store/authStore'
 import api from '@/lib/api'
 
 interface Plantilla {
@@ -19,9 +20,13 @@ interface Plantilla {
   thumbnail_url?: string
   created_at: string
   updated_at: string
+  compartida?: number
+  es_propia?: number
+  creador_nombre?: string
 }
 
 export default function Plantillas() {
+  const esAdmin = useAuthStore(s => s.usuario?.rol === 'admin')
   const [plantillas, setPlantillas] = useState<Plantilla[]>([])
   const [cargando, setCargando] = useState(true)
   const [busqueda, setBusqueda] = useState('')
@@ -178,7 +183,18 @@ export default function Plantillas() {
               <div className="p-4">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold truncate">{plantilla.nombre}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-semibold truncate">{plantilla.nombre}</p>
+                      {plantilla.compartida === 1 && (
+                        <Share2 className="h-3 w-3 shrink-0 text-primary" aria-label="Compartida" />
+                      )}
+                    </div>
+                    {/* El admin necesita ver de quién es cada plantilla */}
+                    {esAdmin && plantilla.es_propia !== 1 && plantilla.creador_nombre && (
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        de {plantilla.creador_nombre}
+                      </p>
+                    )}
                     {plantilla.descripcion && (
                       <p className="text-xs text-muted-foreground truncate mt-0.5">
                         {plantilla.descripcion}
@@ -205,20 +221,26 @@ export default function Plantillas() {
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </button>
-                    <button
-                      onClick={() => navigate(`/constructor?plantilla=${plantilla.id}`)}
-                      className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-primary transition-colors"
-                      title="Editar en constructor"
-                    >
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleEliminar(plantilla.id, plantilla.nombre)}
-                      className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-red-400 transition-colors"
-                      title="Eliminar"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {/* Editar y eliminar solo lo propio; el admin puede con todo.
+                        Sobre una plantilla compartida ajena queda Duplicar. */}
+                    {(plantilla.es_propia === 1 || esAdmin) && (
+                      <>
+                        <button
+                          onClick={() => navigate(`/constructor?plantilla=${plantilla.id}`)}
+                          className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-primary transition-colors"
+                          title="Editar en constructor"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleEliminar(plantilla.id, plantilla.nombre)}
+                          className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-red-400 transition-colors"
+                          title="Eliminar"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

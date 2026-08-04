@@ -286,8 +286,8 @@ una hora, momento en que hay un hueco garantizado.
 
 | Recurso | Admin | Editor |
 |---|---|---|
-| Contactos y plantillas | Total | Total (**compartidos** entre todos los usuarios) |
-| Listas | Total | Crear, editar e importar — **no eliminar** |
+| Listas, contactos y plantillas | Ve y edita **todo**, de todos | Solo **lo que él creó**, más lo compartido |
+| Eliminar una lista | Sí | No (ni las propias) |
 | Campañas | Las suyas | Las suyas (no puede eliminar) |
 | Cuentas SMTP | Ve y gestiona **todas** | Solo usa las que tenga **asignadas** |
 | Usuarios, Auditoría, Ajustes | Sí | No (salvo "Mi cuenta") |
@@ -300,11 +300,30 @@ lo determina la tabla `user_smtp_configs`. La restricción se valida en el backe
 **y al editar** campañas, de modo que una petición manipulada no puede usar una cuenta no
 asignada.
 
-> **Nota sobre recursos compartidos:** listas, contactos y plantillas son visibles y
-> editables por cualquier usuario autenticado; no hay aislamiento entre usuarios para esos
-> recursos. La excepción es **eliminar una lista entera**, restringido a administradores:
-> el borrado arrastra todos sus contactos por CASCADE y afectaría al trabajo de los demás.
-> Los editores sí pueden crear listas, importar y eliminar contactos individuales.
+### Visibilidad de listas, contactos y plantillas
+
+Cada recurso pertenece a quien lo creó (`user_id`):
+
+- **Editor** → ve y edita únicamente lo suyo. No ve nada de otros editores ni del admin.
+- **Admin** → ve y edita todo, con indicación del creador de cada recurso.
+
+**Excepción — recursos compartidos.** El admin puede marcar una lista o una plantilla como
+`compartida`. En ese caso la ven todos los usuarios y pueden **usarla** (enviarle campañas,
+duplicar la plantilla), pero **no editarla, eliminarla ni añadirle contactos**. Solo el
+admin marca y desmarca ese flag.
+
+Los **contactos no tienen visibilidad propia: heredan la de su lista**. Un flag
+independiente permitiría estados incoherentes, como un contacto visible dentro de una lista
+que no lo es.
+
+La regla se aplica **en las consultas SQL**, no solo en la interfaz: el acceso por ID a una
+lista, contacto o plantilla ajena devuelve 404 aunque se manipule la petición. Al crear o
+editar una campaña se valida igualmente que la lista y la plantilla sean accesibles.
+
+> **Al desplegar la migración 007** todo nace privado. Los editores dejan de ver de
+> inmediato las listas y plantillas creadas por administradores; comparte a mano las que el
+> equipo necesite. Las campañas ya existentes siguen enviando —la validación solo actúa al
+> crear o editar—, pero editarlas fallará hasta compartir el recurso.
 
 ---
 

@@ -2,6 +2,7 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { db } = require('../config/database');
 const { autenticar } = require('../middleware/auth');
+const acceso = require('../services/accesoService');
 
 const router = express.Router();
 router.use(autenticar);
@@ -14,14 +15,22 @@ function validar(req, res, next) {
   next();
 }
 
-// GET /api/plantillas - Listar plantillas del usuario
+// GET /api/plantillas - Plantillas visibles para el usuario
+// El admin ve todas; el editor solo las suyas y las compartidas.
 router.get('/', async (req, res, next) => {
   try {
     const pool = db();
+    const filtro = acceso.filtroVisibilidad(req.usuario, 't');
     const [plantillas] = await pool.query(
-      `SELECT id, nombre, descripcion, asunto, thumbnail_url, created_at, updated_at
-       FROM templates
-       ORDER BY updated_at DESC`
+      `SELECT t.id, t.nombre, t.descripcion, t.asunto, t.thumbnail_url,
+              t.created_at, t.updated_at, t.compartida, t.user_id,
+              u.nombre AS creador_nombre,
+              (t.user_id = ?) AS es_propia
+       FROM templates t
+       LEFT JOIN users u ON u.id = t.user_id
+       WHERE ${filtro.sql}
+       ORDER BY t.updated_at DESC`,
+      [req.usuario.id, ...filtro.params]
     );
     res.json({ plantillas });
   } catch (error) {
@@ -33,6 +42,11 @@ router.get('/', async (req, res, next) => {
 router.get('/:id', async (req, res, next) => {
   try {
     const pool = db();
+
+    // Barrera por ID: no basta con ocultarla del listado.
+    const visible = await acceso.puedeVer('plantilla', Number(req.params.id), req.usuario);
+    if (!visible) return res.status(404).json({ error: 'Plantilla no encontrada' });
+
     const [[plantilla]] = await pool.query(
       `SELECT * FROM templates WHERE id = ?`,
       [req.params.id]
@@ -97,16 +111,17 @@ router.put(
     body('asunto').optional().trim(),
     body('descripcion').optional().trim(),
     body('json_design').optional(),
+    body('compartida').optional().isBoolean(),
   ],
   validar,
   async (req, res, next) => {
     try {
       const pool = db();
-      const [[existente]] = await pool.query(
-        'SELECT id FROM templates WHERE id = ?',
-        [req.params.id]
-      );
-      if (!existente) return res.status(404).json({ error: 'Plantilla no encontrada' });
+
+      // Solo el dueño o un admin: ver una plantilla compartida no da derecho
+      // a modificarla.
+      const puede = await acceso.puedeEditar('plantilla', Number(req.params.id), req.usuario);
+      if (!puede) return res.status(404).json({ error: 'Plantilla no encontrada' });
 
       const campos = ['nombre', 'descripcion', 'asunto', 'html_content'];
       const sets = [];
@@ -117,6 +132,17 @@ router.put(
           sets.push(`\`${campo}\` = ?`);
           valores.push(req.body[campo]);
         }
+      }
+
+      // Compartir es exclusivo del administrador.
+      if (req.body.compartida !== undefined) {
+        if (!acceso.esAdmin(req.usuario)) {
+          return res.status(403).json({
+            error: 'Solo un administrador puede compartir o dejar de compartir una plantilla',
+          });
+        }
+        sets.push('`compartida` = ?');
+        valores.push(req.body.compartida ? 1 : 0);
       }
 
       if (req.body.json_design !== undefined) {
@@ -140,6 +166,10 @@ router.put(
 router.delete('/:id', async (req, res, next) => {
   try {
     const pool = db();
+
+    const puede = await acceso.puedeEditar('plantilla', Number(req.params.id), req.usuario);
+    if (!puede) return res.status(404).json({ error: 'Plantilla no encontrada' });
+
     const [result] = await pool.query(
       'DELETE FROM templates WHERE id = ?',
       [req.params.id]
@@ -155,6 +185,13 @@ router.delete('/:id', async (req, res, next) => {
 router.post('/:id/duplicar', async (req, res, next) => {
   try {
     const pool = db();
+
+    // Basta con poder VERLA: duplicar una plantilla compartida es la vía
+    // natural para partir de una corporativa. La copia nace privada y del
+    // usuario que duplica.
+    const visible = await acceso.puedeVer('plantilla', Number(req.params.id), req.usuario);
+    if (!visible) return res.status(404).json({ error: 'Plantilla no encontrada' });
+
     const [[original]] = await pool.query(
       'SELECT * FROM templates WHERE id = ?',
       [req.params.id]

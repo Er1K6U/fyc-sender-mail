@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   Users, Plus, Upload, Search, Trash2, Edit2,
   ChevronLeft, ChevronRight, Filter, UserMinus,
-  Layers, MoreHorizontal, CheckCircle2, XCircle, RefreshCw,
+  Layers, MoreHorizontal, CheckCircle2, XCircle, RefreshCw, Share2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +24,9 @@ interface Lista {
   descripcion?: string
   total_contactos: number
   activos: number
+  compartida?: number
+  es_propia?: number
+  creador_nombre?: string
 }
 
 interface Paginacion {
@@ -216,18 +219,30 @@ export default function Contactos() {
                   listaActiva === lista.id ? 'bg-primary' : 'bg-muted-foreground/30'
                 )} />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{lista.nombre}</p>
-                  <p className="text-xs opacity-60">
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm font-medium truncate">{lista.nombre}</p>
+                    {lista.compartida === 1 && (
+                      <Share2 className="h-3 w-3 shrink-0 text-primary" aria-label="Compartida" />
+                    )}
+                  </div>
+                  <p className="text-xs opacity-60 truncate">
                     {formatearNumero(lista.activos)} activos
+                    {/* El admin necesita saber de quién es cada recurso */}
+                    {esAdmin && !lista.es_propia && lista.creador_nombre &&
+                      ` · ${lista.creador_nombre}`}
                   </p>
                 </div>
                 <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
-                  <button
-                    onClick={e => { e.stopPropagation(); setModalLista({ open: true, lista }) }}
-                    className="p-1 hover:text-primary"
-                  >
-                    <Edit2 className="h-3 w-3" />
-                  </button>
+                  {/* Editar solo lo propio; el admin puede con todo */}
+                  {(lista.es_propia === 1 || esAdmin) && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setModalLista({ open: true, lista }) }}
+                      className="p-1 hover:text-primary"
+                      title="Editar lista"
+                    >
+                      <Edit2 className="h-3 w-3" />
+                    </button>
+                  )}
                   {/* Eliminar una lista entera arrastra sus contactos: solo admin */}
                   {esAdmin && (
                     <button

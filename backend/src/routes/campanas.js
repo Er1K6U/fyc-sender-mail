@@ -11,6 +11,7 @@ const {
 } = require('../services/queueService');
 const auditService = require('../services/auditService');
 const smtpAcceso = require('../services/smtpAccesoService');
+const acceso = require('../services/accesoService');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -155,12 +156,23 @@ router.post(
         programada_para,
       } = req.body;
 
-      // Las listas son compartidas entre todos los usuarios autenticados.
+      // La lista debe ser propia o estar compartida (el admin accede a todas).
+      const listaVisible = await acceso.puedeVer('lista', Number(list_id), req.usuario);
+      if (!listaVisible) return res.status(404).json({ error: 'Lista no encontrada' });
+
       const [[lista]] = await pool.query(
         'SELECT id, activos FROM contact_lists WHERE id = ?',
         [list_id]
       );
       if (!lista) return res.status(404).json({ error: 'Lista no encontrada' });
+
+      // Misma regla para la plantilla, si se indicó una.
+      if (template_id) {
+        const plantillaVisible = await acceso.puedeVer('plantilla', Number(template_id), req.usuario);
+        if (!plantillaVisible) {
+          return res.status(404).json({ error: 'Plantilla no encontrada' });
+        }
+      }
 
       // Barrera de seguridad: un editor no puede usar una cuenta SMTP que no
       // tenga asignada, aunque manipule la petición. La restricción de la UI
@@ -235,8 +247,18 @@ router.put(
         return res.status(409).json({ error: `No se puede editar una campaña en estado "${campana.estado}"` });
       }
 
-      // Misma barrera que al crear: sin esto, un editor podría crear la campaña
-      // con su cuenta asignada y luego editarla para apuntar a otra.
+      // Mismas barreras que al crear: sin esto, un editor podría crear la
+      // campaña con recursos propios y luego reapuntarla a los de otro.
+      if (req.body.list_id !== undefined) {
+        const visible = await acceso.puedeVer('lista', Number(req.body.list_id), req.usuario);
+        if (!visible) return res.status(404).json({ error: 'Lista no encontrada' });
+      }
+
+      if (req.body.template_id !== undefined && req.body.template_id !== null) {
+        const visible = await acceso.puedeVer('plantilla', Number(req.body.template_id), req.usuario);
+        if (!visible) return res.status(404).json({ error: 'Plantilla no encontrada' });
+      }
+
       if (req.body.smtp_config_id !== undefined) {
         const puedeUsarSmtp = await smtpAcceso.puedeUsar(
           req.usuario, Number(req.body.smtp_config_id)
