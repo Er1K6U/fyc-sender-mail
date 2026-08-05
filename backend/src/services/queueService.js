@@ -327,6 +327,13 @@ async function procesarEnvio(job) {
       await marcarEnvio(pool, sendId, 'enviado', null, messageId);
       await actualizarContadoresCampaña(pool, campaignId, 'enviado');
 
+      // Solo cuentan los fallos SEGUIDOS: un envío correcto rompe la racha.
+      // La condición evita un UPDATE inútil en el caso normal (racha ya a 0).
+      await pool.query(
+        'UPDATE campaigns SET fallos_consecutivos = 0 WHERE id = ? AND fallos_consecutivos > 0',
+        [campaignId]
+      );
+
       // Incrementar contador SMTP del día.
       // Si el último envío fue en una fecha anterior, el contador arranca de
       // nuevo: antes solo se sumaba y fecha_reset nunca provocaba el reinicio,
@@ -388,6 +395,10 @@ async function procesarEnvio(job) {
         permanente: clasificacion.permanente,
       });
       await emitirProgresoActual(pool, campaignId);
+
+      // Corte de seguridad. Va al final para que el envío quede bien registrado
+      // aunque esta llamada acabe pausando la campaña.
+      await registrarFalloConsecutivo(pool, campaignId, clasificacion);
     }
 
     if (clasificacion.permanente) {
@@ -397,6 +408,94 @@ async function procesarEnvio(job) {
 
     throw error; // Bull reintentará
   }
+}
+
+/**
+ * Corte de seguridad por fallos consecutivos.
+ *
+ * Si algo va mal de raíz —credenciales caducadas, bloqueo del proveedor, lista
+ * corrupta— la campaña se detiene sola en vez de quemar la lista entera y dañar
+ * la reputación del dominio.
+ *
+ * Solo cuentan fallos SEGUIDOS: cualquier envío correcto pone el contador a 0.
+ *
+ * A diferencia de la pausa por límite del proveedor, esta NO programa
+ * reanudación automática: hace falta corregir el problema y reanudar a mano.
+ *
+ * @returns {boolean} true si esta llamada provocó la pausa.
+ */
+async function registrarFalloConsecutivo(pool, campaignId, clasificacion) {
+  try {
+    return await aplicarCorteFallosConsecutivos(pool, campaignId, clasificacion);
+  } catch (error) {
+    // El corte es una red de seguridad: si falla, no debe romper el registro
+    // del envío ni provocar reintentos de Bull.
+    logger.error(`Error en el corte por fallos consecutivos (campaña ${campaignId}): ${error.message}`);
+    return false;
+  }
+}
+
+async function aplicarCorteFallosConsecutivos(pool, campaignId, clasificacion) {
+  const umbral = await settingsService.getNumero('corte_fallos_consecutivos');
+  if (!umbral || umbral <= 0) return false; // corte desactivado
+
+  // Incremento atómico: varios workers pueden fallar a la vez.
+  await pool.query(
+    'UPDATE campaigns SET fallos_consecutivos = fallos_consecutivos + 1 WHERE id = ?',
+    [campaignId]
+  );
+
+  const [[fila]] = await pool.query(
+    'SELECT fallos_consecutivos FROM campaigns WHERE id = ?',
+    [campaignId]
+  );
+  const racha = Number(fila?.fallos_consecutivos || 0);
+  if (racha < umbral) return false;
+
+  // UPDATE condicional: si varios workers cruzan el umbral a la vez, solo el
+  // primero pausa de verdad y emite avisos.
+  const [resultado] = await pool.query(
+    `UPDATE campaigns
+     SET estado = 'pausada',
+         pausa_motivo = 'fallos_consecutivos',
+         reanudar_en = NULL,
+         ultimo_error_smtp = ?
+     WHERE id = ? AND estado = 'enviando'`,
+    [String(clasificacion?.mensaje || '').slice(0, 500), campaignId]
+  );
+  if (resultado.affectedRows === 0) return false;
+
+  logger.warn(
+    `Campaña ${campaignId} pausada por corte de seguridad: ${racha} fallos consecutivos ` +
+    `(umbral ${umbral}). Último error: ${clasificacion?.mensaje}`
+  );
+
+  await auditService.registrar({
+    evento: auditService.EVENTOS.PAUSA_FALLOS_CONSECUTIVOS,
+    campaignId,
+    detalle: {
+      fallos_consecutivos: racha,
+      umbral,
+      ultima_categoria: clasificacion?.categoria || null,
+      ultimo_error: String(clasificacion?.mensaje || '').slice(0, 300),
+    },
+  });
+
+  socketService.emitirPausada(campaignId, {
+    motivo: 'fallos_consecutivos',
+    fallos_consecutivos: racha,
+    umbral,
+    error: clasificacion?.mensaje || null,
+    categoria: clasificacion?.categoria || null,
+  });
+
+  socketService.emitirLog(
+    campaignId, 'error',
+    `Corte de seguridad: ${racha} fallos consecutivos. La campaña se detuvo para no ` +
+    `dañar la reputación del dominio. Revisa el problema y reanúdala manualmente.`
+  );
+
+  return true;
 }
 
 /**
@@ -809,9 +908,12 @@ async function pausarPorLimiteProveedor(campaignId, smtpConfigId, mensajeError) 
  */
 async function reanudarCampaña(campaignId) {
   const pool = db();
+  // La racha se reinicia al reanudar: si no, una campaña cortada por fallos
+  // consecutivos volvería a pausarse al primer fallo posterior.
   await pool.query(
     `UPDATE campaigns
-     SET estado = 'enviando', pausa_motivo = NULL, reanudar_en = NULL
+     SET estado = 'enviando', pausa_motivo = NULL, reanudar_en = NULL,
+         fallos_consecutivos = 0
      WHERE id = ? AND estado = 'pausada'`,
     [campaignId]
   );

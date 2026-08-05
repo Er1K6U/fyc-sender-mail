@@ -59,6 +59,8 @@ router.put(
       .withMessage('Mensajes por conexión: 1-500 (recomendado 50)'),
     body('pausa_limite_base_min').isInt({ min: 1, max: 240 })
       .withMessage('Pausa base tras error 454: 1-240 minutos'),
+    body('corte_fallos_consecutivos').isInt({ min: 0, max: 100 })
+      .withMessage('Corte por fallos consecutivos: 0-100 (0 desactiva el corte)'),
   ],
   validarCampos,
   async (req, res, next) => {
@@ -66,6 +68,7 @@ router.put(
       const {
         emails_por_min, emails_por_hora, pausa_entre_lotes_ms, jitter_pct, warmup_activo,
         smtp_max_connections, smtp_max_messages, pausa_limite_base_min,
+        corte_fallos_consecutivos,
       } = req.body;
 
       // Coherencia: emails_por_hora no debería ser menor que emails_por_min
@@ -83,6 +86,7 @@ router.put(
         smtp_max_connections,
         smtp_max_messages,
         pausa_limite_base_min,
+        corte_fallos_consecutivos,
         ...(warmup_activo !== undefined ? { warmup_activo: warmup_activo ? 1 : 0 } : {}),
       });
 

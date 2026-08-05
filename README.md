@@ -349,6 +349,20 @@ rechazo por spam es permanente, pero el buzón existe y no se toca al contacto.
 Un error permanente **corta los reintentos de inmediato**, sin gastar los intentos de la
 cola ni volver a molestar al servidor de destino.
 
+### Corte automático por fallos consecutivos
+
+Si una campaña acumula **N fallos seguidos** (por defecto 5, configurable en
+Ajustes → Envío; `0` desactiva el corte), se pausa sola. Una racha de fallos suele
+significar que algo está mal de raíz —credenciales caducadas, bloqueo del proveedor, lista
+en mal estado— y seguir enviando quemaría la lista entera.
+
+Solo cuentan los fallos **consecutivos**: cualquier envío correcto pone el contador a cero.
+Los desuscritos no cuentan, porque son el sistema funcionando bien, no un síntoma de avería.
+
+A diferencia de la pausa por límite del proveedor, **esta pausa no se reanuda sola**:
+requiere corregir el problema y reanudar a mano desde el detalle de la campaña, que muestra
+el último error y una lista de qué revisar. Queda registrado en `audit_log`.
+
 ### Reenvío selectivo
 
 Desde el detalle de campaña, `Reenviar no entregados` muestra cuántos destinatarios se

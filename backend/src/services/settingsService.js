@@ -16,6 +16,8 @@ const DEFAULTS = {
   smtp_max_connections: 2,
   smtp_max_messages: 50,
   pausa_limite_base_min: 15,
+  // Corte de seguridad: fallos seguidos que detienen la campaña (0 = desactivado)
+  corte_fallos_consecutivos: 5,
 };
 
 // Claves que se exponen/editan como configuración de throttling.
@@ -28,6 +30,7 @@ const CLAVES_THROTTLE = [
   'smtp_max_connections',
   'smtp_max_messages',
   'pausa_limite_base_min',
+  'corte_fallos_consecutivos',
 ];
 
 /**
@@ -74,6 +77,7 @@ async function getThrottle() {
     smtp_max_connections: await getNumero('smtp_max_connections'),
     smtp_max_messages: await getNumero('smtp_max_messages'),
     pausa_limite_base_min: await getNumero('pausa_limite_base_min'),
+    corte_fallos_consecutivos: await getNumero('corte_fallos_consecutivos'),
   };
 }
 

@@ -622,7 +622,8 @@ router.post('/:id/reintentar', async (req, res, next) => {
            estado = 'enviando',
            completada_en = NULL,
            pausa_motivo = NULL,
-           reanudar_en = NULL
+           reanudar_en = NULL,
+           fallos_consecutivos = 0
        WHERE id = ?`,
       [Number(fallidos_reseteados || 0), campana.id]
     );

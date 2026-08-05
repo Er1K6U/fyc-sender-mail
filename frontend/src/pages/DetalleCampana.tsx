@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, Play, Pause, XCircle, CheckCircle2,
   Clock, Send, Zap, BarChart2,
-  RefreshCw, Eye, MousePointerClick, ShieldAlert,
+  RefreshCw, Eye, MousePointerClick, ShieldAlert, OctagonAlert,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,6 +27,8 @@ interface Campana {
   reanudar_en?: string | null
   pausas_por_limite?: number
   ultimo_error_smtp?: string | null
+  // Corte de seguridad por fallos consecutivos
+  fallos_consecutivos?: number
 }
 
 interface SendRow {
@@ -169,6 +171,14 @@ export default function DetalleCampana() {
           `Se reanudará automáticamente en ${data.espera_min} minutos.`
         )
       }
+      if (data?.motivo === 'fallos_consecutivos') {
+        setCampana(prev => prev ? { ...prev, fallos_consecutivos: data.fallos_consecutivos } : null)
+        mostrar(
+          'error',
+          `Detenida por ${data.fallos_consecutivos} fallos consecutivos`,
+          'Revisa el problema y reanúdala manualmente.'
+        )
+      }
     },
     'campaign:error': (msg: string) => {
       setCampana(prev => prev ? { ...prev, estado: 'error' } : null)
@@ -190,6 +200,9 @@ export default function DetalleCampana() {
   // ── Cuenta regresiva de la pausa automática por límite del proveedor ──
   const pausadaPorLimite =
     campana?.estado === 'pausada' && campana?.pausa_motivo === 'limite_smtp'
+  // Corte de seguridad: no se reanuda solo, requiere intervención.
+  const cortadaPorFallos =
+    campana?.estado === 'pausada' && campana?.pausa_motivo === 'fallos_consecutivos'
   const [segundosRestantes, setSegundosRestantes] = useState(0)
   const recargaLanzada = useRef(false)
 
@@ -251,10 +264,12 @@ export default function DetalleCampana() {
   }
 
   const cfgBase = ESTADO_CAMPANA[campana.estado] || ESTADO_CAMPANA.borrador
-  // Distinguir la pausa automática del proveedor de una pausa manual.
+  // Distinguir las pausas automáticas de una pausa manual.
   const cfg = pausadaPorLimite
     ? { ...cfgBase, label: 'Pausada por límite de Gmail' }
-    : cfgBase
+    : cortadaPorFallos
+      ? { ...cfgBase, variant: 'destructive', label: 'Detenida por fallos' }
+      : cfgBase
   const porcentaje = progreso.total > 0
     ? Math.min(100, Math.round(((progreso.enviados + progreso.fallidos) / progreso.total) * 100))
     : 0
@@ -368,6 +383,47 @@ export default function DetalleCampana() {
                   {campana.ultimo_error_smtp}
                 </p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Corte de seguridad por fallos consecutivos */}
+      {cortadaPorFallos && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-destructive/15 flex items-center justify-center shrink-0">
+              <OctagonAlert className="h-5 w-5 text-red-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-red-400">
+                Pausada automáticamente por {campana.fallos_consecutivos ?? 'varios'} fallos consecutivos
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                La campaña se detuvo sola como medida de seguridad: una racha de fallos seguidos
+                suele significar que algo está mal de raíz, y seguir enviando dañaría la
+                reputación del dominio. <strong>No se reanudará sola.</strong>
+              </p>
+
+              {campana.ultimo_error_smtp && (
+                <div className="mt-3 rounded-lg bg-secondary/50 p-3">
+                  <p className="text-[11px] font-medium text-muted-foreground mb-1">
+                    Último error registrado
+                  </p>
+                  <p className="text-xs text-foreground/80 leading-relaxed">
+                    {campana.ultimo_error_smtp}
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-3 text-xs text-muted-foreground">
+                <p className="font-medium mb-1">Qué revisar antes de reanudar:</p>
+                <ul className="list-disc list-inside space-y-0.5 leading-relaxed">
+                  <li>Que las credenciales de la cuenta SMTP sigan siendo válidas</li>
+                  <li>Que la cuenta no haya alcanzado su límite diario</li>
+                  <li>Que las direcciones de la lista sean reales y estén actualizadas</li>
+                </ul>
+              </div>
             </div>
           </div>
         </div>

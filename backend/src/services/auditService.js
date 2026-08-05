@@ -17,6 +17,7 @@ const EVENTOS = {
   CAMPANA_RESTAURADA: 'campana_restaurada',
   CAMPANA_REINTENTADA: 'campana_reintentada',
   PAUSA_LIMITE_SMTP: 'pausa_limite_smtp',
+  PAUSA_FALLOS_CONSECUTIVOS: 'pausa_fallos_consecutivos',
   // Gestión de acceso: no van asociados a una campaña (campaign_id queda NULL);
   // el usuario afectado y las cuentas viajan en `detalle`.
   SMTP_ASIGNADO: 'smtp_asignado',
@@ -36,6 +37,7 @@ const ETIQUETAS = {
   campana_restaurada: 'Campaña restaurada',
   campana_reintentada: 'Reenvío selectivo a fallidos',
   pausa_limite_smtp: 'Pausada por límite del proveedor',
+  pausa_fallos_consecutivos: 'Pausada por fallos consecutivos',
   smtp_asignado: 'Cuentas SMTP asignadas',
   smtp_desasignado: 'Cuentas SMTP desasignadas',
 };

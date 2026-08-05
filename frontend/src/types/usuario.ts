@@ -20,4 +20,6 @@ export interface ThrottleConfig {
   smtp_max_connections: number
   smtp_max_messages: number
   pausa_limite_base_min: number
+  // Corte de seguridad por fallos consecutivos (0 = desactivado)
+  corte_fallos_consecutivos: number
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Gauge, ShieldCheck, Timer, Shuffle, TrendingUp, Sparkles,
-  Loader2, Info, Layers, Plug, AlertTriangle,
+  Loader2, Info, Layers, Plug, AlertTriangle, ShieldAlert,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ const RECOMENDADOS = {
   smtp_max_connections: '2',
   smtp_max_messages: '50',
   pausa_limite_base_min: '15',
+  corte_fallos_consecutivos: '5',
 }
 
 // Tabla de warmup gradual para cuentas nuevas (informativa).
@@ -41,6 +42,7 @@ export default function EnvioTab() {
     smtp_max_connections: '',
     smtp_max_messages: '',
     pausa_limite_base_min: '',
+    corte_fallos_consecutivos: '',
   })
   const [cargando, setCargando] = useState(true)
   const [guardando, setGuardando] = useState(false)
@@ -59,6 +61,7 @@ export default function EnvioTab() {
         smtp_max_connections: String(t.smtp_max_connections),
         smtp_max_messages: String(t.smtp_max_messages),
         pausa_limite_base_min: String(t.pausa_limite_base_min),
+        corte_fallos_consecutivos: String(t.corte_fallos_consecutivos),
       })
     } catch {
       mostrar('error', 'Error al cargar la configuración de envío')
@@ -86,6 +89,7 @@ export default function EnvioTab() {
         smtp_max_connections: parseInt(form.smtp_max_connections),
         smtp_max_messages: parseInt(form.smtp_max_messages),
         pausa_limite_base_min: parseInt(form.pausa_limite_base_min),
+        corte_fallos_consecutivos: parseInt(form.corte_fallos_consecutivos),
       })
       mostrar('success', 'Configuración de envío guardada')
     } catch (err: any) {
@@ -241,6 +245,51 @@ export default function EnvioTab() {
               durante ese tiempo y se reanuda sola. Si vuelve a ocurrir, la espera se duplica
               (backoff progresivo, hasta 8× la pausa base). El número de conexiones también define
               cuántos correos se procesan en paralelo.
+            </span>
+          </div>
+
+        </CardContent>
+      </Card>
+
+      {/* ── Corte de seguridad ── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
+              <ShieldAlert className="h-4 w-4 text-orange-400" />
+            </div>
+            <div>
+              <CardTitle>Corte automático de seguridad</CardTitle>
+              <CardDescription>
+                Detiene una campaña si algo va mal, antes de quemar la lista entera.
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-5">
+          <div className="grid sm:grid-cols-2 gap-4 items-start">
+            <Input
+              label="Fallos consecutivos para pausar"
+              type="number"
+              min={0}
+              max={100}
+              value={form.corte_fallos_consecutivos}
+              onChange={e => setForm({ ...form, corte_fallos_consecutivos: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground leading-relaxed sm:pt-7">
+              Cuentan solo los fallos <strong>seguidos</strong>: cualquier envío correcto
+              reinicia el contador. Usa <strong>0</strong> para desactivar el corte.
+            </p>
+          </div>
+
+          <div className="flex items-start gap-2 rounded-lg bg-orange-500/5 border border-orange-500/20 p-3 text-xs text-muted-foreground">
+            <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0 mt-0.5" />
+            <span>
+              Si se alcanza el umbral, la campaña se pausa y <strong>no se reanuda sola</strong>:
+              suele indicar credenciales caducadas, un bloqueo del proveedor o una lista
+              en mal estado. Corrige el problema y reanúdala a mano desde el detalle de
+              la campaña.
             </span>
           </div>
 
