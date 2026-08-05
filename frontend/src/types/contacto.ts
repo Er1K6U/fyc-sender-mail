@@ -9,6 +9,9 @@ export interface Contacto {
   fecha_unsub?: string
   created_at: string
   lista_nombre?: string
+  // Desactivación automática por dirección inexistente
+  motivo_invalido?: string | null
+  fecha_invalido?: string | null
 }
 
 // Contacto para crear/editar en el modal

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   Users, Plus, Upload, Search, Trash2, Edit2,
   ChevronLeft, ChevronRight, Filter, UserMinus,
-  Layers, MoreHorizontal, CheckCircle2, XCircle, RefreshCw, Share2,
+  Layers, MoreHorizontal, CheckCircle2, XCircle, RefreshCw, Share2, RotateCcw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -141,6 +141,21 @@ export default function Contactos() {
       cargarListas()
     } catch {
       mostrar('error', 'Error al desuscribir')
+    }
+  }
+
+  // ── Reactivar una dirección desactivada automáticamente ──
+  const handleReactivar = async (contacto: Contacto) => {
+    if (!confirm(
+      `¿Reactivar "${contacto.email}"?\n\nSe desactivó porque el servidor de destino la rechazó. ` +
+      `Si la dirección sigue sin existir, volver a enviarle dañará la reputación del dominio.`
+    )) return
+    try {
+      const { data } = await api.post(`/contactos/${contacto.id}/reactivar`)
+      mostrar('success', 'Dirección reactivada', data.mensaje)
+      cargarContactos()
+    } catch (err: any) {
+      mostrar('error', 'Error', err.response?.data?.error)
     }
   }
 
@@ -426,9 +441,19 @@ export default function Contactos() {
                         </td>
                         <td className="px-4 py-3">
                           {!contacto.email_valido ? (
-                            <Badge variant="destructive">
-                              <XCircle className="h-3 w-3" /> Inválido
-                            </Badge>
+                            <div>
+                              <Badge variant="destructive">
+                                <XCircle className="h-3 w-3" /> Inválido
+                              </Badge>
+                              {/* Motivo de la desactivación automática */}
+                              {contacto.motivo_invalido && (
+                                <p className="text-[10px] text-muted-foreground mt-1 max-w-[220px] leading-snug">
+                                  {contacto.motivo_invalido}
+                                  {contacto.fecha_invalido &&
+                                    ` (${formatearFecha(contacto.fecha_invalido)})`}
+                                </p>
+                              )}
+                            </div>
                           ) : !contacto.suscrito ? (
                             <Badge variant="orange">
                               <UserMinus className="h-3 w-3" /> Desuscrito
@@ -444,6 +469,16 @@ export default function Contactos() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* Reactivar una dirección desactivada: solo admin */}
+                            {esAdmin && !contacto.email_valido && (
+                              <button
+                                onClick={() => handleReactivar(contacto)}
+                                className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-green-400 transition-colors"
+                                title="Reactivar dirección"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             <button
                               onClick={() => setModalContacto({ open: true, contacto })}
                               className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"

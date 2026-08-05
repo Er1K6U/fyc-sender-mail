@@ -472,6 +472,189 @@ router.post('/:id/cancelar', async (req, res, next) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REENVÍO SELECTIVO
+//
+// Regla inviolable: nunca se reencola un envío en estado 'enviado'. Se sostiene
+// con dos barreras independientes:
+//   1. Aquí solo se tocan filas cuyo estado es 'fallido' o 'pendiente'.
+//   2. procesarEnvio descarta cualquier send que ya esté 'enviado'.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Condición SQL de "reintentable", compartida por la previsualización y la
+// ejecución para que lo que se muestra y lo que se hace no puedan divergir.
+const COND_REINTENTABLE = `
+  cs.estado IN ('fallido', 'pendiente')
+  AND COALESCE(cs.error_permanente, 0) = 0
+  AND co.suscrito = 1
+  AND co.email_valido = 1
+  AND cs.email NOT IN (SELECT email FROM unsubscribes)
+`;
+
+async function campanaPropia(pool, req) {
+  const [[campana]] = await pool.query(
+    `SELECT id, nombre, estado, user_id, smtp_config_id
+     FROM campaigns
+     WHERE id = ? AND deleted_at IS NULL
+       ${acceso.esAdmin(req.usuario) ? '' : 'AND user_id = ?'}`,
+    acceso.esAdmin(req.usuario) ? [req.params.id] : [req.params.id, req.usuario.id]
+  );
+  return campana;
+}
+
+// ── GET /api/campanas/:id/reintento ───────────────────────────────────────────
+// Previsualización: qué se reenviaría y qué se excluye, antes de confirmar.
+router.get('/:id/reintento', async (req, res, next) => {
+  try {
+    const pool = db();
+    const campana = await campanaPropia(pool, req);
+    if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    // Reintentables, desglosados por categoría de error.
+    const [porCategoria] = await pool.query(
+      `SELECT COALESCE(cs.error_categoria, 'sin_clasificar') AS categoria,
+              cs.estado,
+              COUNT(*) AS total
+       FROM campaign_sends cs
+       JOIN contacts co ON co.id = cs.contact_id
+       WHERE cs.campaign_id = ? AND ${COND_REINTENTABLE}
+       GROUP BY categoria, cs.estado
+       ORDER BY total DESC`,
+      [campana.id]
+    );
+
+    // Excluidos y por qué: es lo que da confianza antes de pulsar el botón.
+    const [[excluidos]] = await pool.query(
+      `SELECT
+         COUNT(CASE WHEN cs.estado = 'enviado' THEN 1 END) AS ya_enviados,
+         COUNT(CASE WHEN cs.estado <> 'enviado' AND cs.error_permanente = 1 THEN 1 END) AS error_permanente,
+         COUNT(CASE WHEN cs.estado <> 'enviado' AND co.suscrito = 0 THEN 1 END) AS desuscritos,
+         COUNT(CASE WHEN cs.estado <> 'enviado' AND co.email_valido = 0 THEN 1 END) AS direcciones_invalidas
+       FROM campaign_sends cs
+       JOIN contacts co ON co.id = cs.contact_id
+       WHERE cs.campaign_id = ?`,
+      [campana.id]
+    );
+
+    const total = porCategoria.reduce((n, f) => n + Number(f.total), 0);
+
+    res.json({
+      campana: { id: campana.id, nombre: campana.nombre, estado: campana.estado },
+      total_reintentables: total,
+      desglose: porCategoria.map(f => ({
+        categoria: f.categoria,
+        estado: f.estado,
+        total: Number(f.total),
+      })),
+      excluidos: {
+        ya_enviados: Number(excluidos?.ya_enviados || 0),
+        error_permanente: Number(excluidos?.error_permanente || 0),
+        desuscritos: Number(excluidos?.desuscritos || 0),
+        direcciones_invalidas: Number(excluidos?.direcciones_invalidas || 0),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /api/campanas/:id/reintentar ─────────────────────────────────────────
+router.post('/:id/reintentar', async (req, res, next) => {
+  try {
+    const pool = db();
+    const campana = await campanaPropia(pool, req);
+    if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    if (['enviando', 'programada'].includes(campana.estado)) {
+      return res.status(409).json({
+        error: 'La campaña ya está en curso. Espera a que termine o paúsala antes de reintentar.',
+      });
+    }
+    if (!campana.smtp_config_id) {
+      return res.status(400).json({ error: 'La campaña no tiene una cuenta SMTP asignada' });
+    }
+
+    // El reenvío usa la misma cuenta SMTP: se revalida por si el acceso cambió.
+    const puedeUsarSmtp = await smtpAcceso.puedeUsar(req.usuario, campana.smtp_config_id);
+    if (!puedeUsarSmtp) {
+      return res.status(403).json({
+        error: 'Ya no tienes acceso a la cuenta SMTP de esta campaña. Contacta al administrador.',
+      });
+    }
+
+    // Ids reintentables. Se calculan primero para poder auditar el número real.
+    const [reintentables] = await pool.query(
+      `SELECT cs.id
+       FROM campaign_sends cs
+       JOIN contacts co ON co.id = cs.contact_id
+       WHERE cs.campaign_id = ? AND ${COND_REINTENTABLE}`,
+      [campana.id]
+    );
+
+    if (reintentables.length === 0) {
+      return res.status(409).json({
+        error: 'No hay envíos que se puedan reintentar. Los fallos restantes son permanentes o corresponden a contactos desuscritos o inválidos.',
+      });
+    }
+
+    const ids = reintentables.map(r => r.id);
+
+    // Cuántos venían de 'fallido': hay que descontarlos del contador de la
+    // campaña, o la barra de progreso queda inflada y nunca cuadra.
+    const [[{ fallidos_reseteados }]] = await pool.query(
+      `SELECT COUNT(*) AS fallidos_reseteados
+       FROM campaign_sends WHERE id IN (?) AND estado = 'fallido'`,
+      [ids]
+    );
+
+    // Reset a 'pendiente'. El filtro por id ya excluye los 'enviado'.
+    await pool.query(
+      `UPDATE campaign_sends
+       SET estado = 'pendiente', ultimo_error = NULL,
+           error_categoria = NULL, error_permanente = NULL, error_mensaje = NULL
+       WHERE id IN (?)`,
+      [ids]
+    );
+
+    await pool.query(
+      `UPDATE campaigns
+       SET fallidos = GREATEST(0, fallidos - ?),
+           estado = 'enviando',
+           completada_en = NULL,
+           pausa_motivo = NULL,
+           reanudar_en = NULL
+       WHERE id = ?`,
+      [Number(fallidos_reseteados || 0), campana.id]
+    );
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_REINTENTADA,
+      campaignId: campana.id,
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: {
+        reintentados: ids.length,
+        fallidos_reseteados: Number(fallidos_reseteados || 0),
+        estado_previo: campana.estado,
+      },
+    });
+
+    // Reutiliza el encolado normal: hereda throttling, cap horario, jitter y la
+    // compuerta de la ventana móvil sin duplicar nada de esa lógica.
+    encolarCampaña(campana.id).catch(err => {
+      logger.error(`Error al reencolar la campaña ${campana.id}:`, err);
+      pool.query(`UPDATE campaigns SET estado = 'error' WHERE id = ?`, [campana.id]);
+    });
+
+    res.json({
+      mensaje: `Reenviando a ${ids.length} destinatario(s). Los correos ya entregados no se repiten.`,
+      reintentados: ids.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── GET /api/campanas/:id/sends ───────────────────────────────────────────────
 // Historial de envíos individuales (paginado)
 router.get(
@@ -507,6 +690,7 @@ router.get(
       const offset = (pagina - 1) * por_pagina;
       const [sends] = await pool.query(
         `SELECT cs.id, cs.email, cs.estado, cs.intentos, cs.ultimo_error,
+                cs.error_categoria, cs.error_permanente, cs.error_mensaje,
                 cs.enviado_en, cs.created_at,
                 c.nombre AS contacto_nombre
          FROM campaign_sends cs

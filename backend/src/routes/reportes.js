@@ -368,6 +368,7 @@ router.get('/campana/:id/no-entregados', async (req, res) => {
     const [rows] = await pool.query(
       `SELECT cs.id AS send_id, cs.email, cs.estado, cs.intentos,
               cs.ultimo_error, cs.enviado_en,
+              cs.error_categoria, cs.error_permanente, cs.error_mensaje,
               co.nombre, co.empresa
        FROM campaign_sends cs
        LEFT JOIN contacts co ON co.id = cs.contact_id

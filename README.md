@@ -327,6 +327,53 @@ editar una campaña se valida igualmente que la lista y la plantilla sean accesi
 
 ---
 
+## Errores de envío y reenvío selectivo
+
+Cada fallo se clasifica en una categoría, se traduce al español y se marca como
+**permanente** o **temporal**. El texto técnico original se conserva intacto en
+`ultimo_error`: la traducción no destruye la evidencia.
+
+| Categoría | ¿Reintentable? | ¿Desactiva el contacto? |
+|---|---|---|
+| Dirección inexistente | No | **Sí** |
+| Rechazado como spam | No | No |
+| Buzón lleno | Sí | No |
+| Límite del proveedor | Sí | No |
+| Error de autenticación | Sí | No |
+| Error temporal | Sí | No |
+
+Son dos conceptos distintos: **permanente** decide si se reintenta; la **desactivación
+del contacto** solo ocurre cuando el servidor confirma que la dirección no existe. Un
+rechazo por spam es permanente, pero el buzón existe y no se toca al contacto.
+
+Un error permanente **corta los reintentos de inmediato**, sin gastar los intentos de la
+cola ni volver a molestar al servidor de destino.
+
+### Reenvío selectivo
+
+Desde el detalle de campaña, `Reenviar no entregados` muestra cuántos destinatarios se
+reenviarían, desglosados por motivo, y **cuántos se excluyen y por qué** antes de confirmar.
+
+Los correos ya entregados **nunca se repiten**, garantizado por dos barreras
+independientes: el reenvío solo toca filas cuyo estado no es `enviado`, y el procesador de
+la cola descarta cualquier envío ya marcado como `enviado`. Se excluyen también los fallos
+permanentes, los desuscritos y las direcciones inválidas.
+
+El reenvío reutiliza el encolado normal, así que hereda el throttling, el límite horario,
+el jitter y la compuerta de ventana móvil. Queda registrado en `audit_log`.
+
+### Limpieza automática de direcciones muertas
+
+Al primer fallo por dirección inexistente, el contacto se marca como inválido **en todas
+las listas donde aparezca ese email** — si se desactivara solo la fila que falló, se le
+seguiría enviando desde las demás. `encolarCampaña` ya excluye los contactos con
+`email_valido = 0`, así que quedan fuera de futuras campañas.
+
+Se revisan en **Contactos → filtro "Inválidos"**, que muestra el motivo y la fecha. Un
+admin puede reactivarlos desde ahí.
+
+---
+
 ## Auditoría y trazabilidad
 
 El módulo de auditoría (`/auditoria`, solo administradores) conserva el historial de

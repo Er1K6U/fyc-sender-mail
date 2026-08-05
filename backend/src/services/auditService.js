@@ -15,6 +15,7 @@ const EVENTOS = {
   CAMPANA_CANCELADA: 'campana_cancelada',
   CAMPANA_ELIMINADA: 'campana_eliminada',
   CAMPANA_RESTAURADA: 'campana_restaurada',
+  CAMPANA_REINTENTADA: 'campana_reintentada',
   PAUSA_LIMITE_SMTP: 'pausa_limite_smtp',
   // Gestión de acceso: no van asociados a una campaña (campaign_id queda NULL);
   // el usuario afectado y las cuentas viajan en `detalle`.
@@ -33,6 +34,7 @@ const ETIQUETAS = {
   campana_cancelada: 'Campaña cancelada',
   campana_eliminada: 'Campaña eliminada',
   campana_restaurada: 'Campaña restaurada',
+  campana_reintentada: 'Reenvío selectivo a fallidos',
   pausa_limite_smtp: 'Pausada por límite del proveedor',
   smtp_asignado: 'Cuentas SMTP asignadas',
   smtp_desasignado: 'Cuentas SMTP desasignadas',

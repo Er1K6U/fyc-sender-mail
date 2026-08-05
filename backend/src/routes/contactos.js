@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const { db } = require('../config/database');
-const { autenticar } = require('../middleware/auth');
+const { autenticar, soloAdmin } = require('../middleware/auth');
 const { subirCSV } = require('../config/multer');
 const {
   leerArchivo,
@@ -90,6 +90,7 @@ router.get(
       const [contactos] = await pool.query(
         `SELECT c.id, c.nombre, c.email, c.empresa, c.email_valido, c.suscrito,
                 c.fecha_unsub, c.created_at,
+                c.motivo_invalido, c.fecha_invalido,
                 cl.nombre AS lista_nombre
          FROM contacts c
          LEFT JOIN contact_lists cl ON cl.id = c.list_id
@@ -374,6 +375,41 @@ router.post(
     }
   }
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/contactos/:id/reactivar - Revertir una desactivación automática
+//
+// Solo admin: reactivar una dirección que el servidor declaró inexistente
+// vuelve a exponer el dominio, así que es una decisión consciente.
+// Se reactivan todas las filas con ese email, igual que se desactivaron.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/:id/reactivar', soloAdmin, async (req, res, next) => {
+  try {
+    const pool = db();
+    const [[contacto]] = await pool.query(
+      'SELECT id, email, email_valido FROM contacts WHERE id = ?',
+      [req.params.id]
+    );
+    if (!contacto) return res.status(404).json({ error: 'Contacto no encontrado' });
+    if (contacto.email_valido === 1) {
+      return res.status(409).json({ error: 'Este contacto ya está activo' });
+    }
+
+    const [resultado] = await pool.query(
+      `UPDATE contacts
+       SET email_valido = 1, motivo_invalido = NULL, fecha_invalido = NULL
+       WHERE email = ? AND email_valido = 0`,
+      [contacto.email]
+    );
+
+    res.json({
+      mensaje: `Dirección reactivada en ${resultado.affectedRows} lista(s).`,
+      reactivados: resultado.affectedRows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/contactos/:id/desuscribir - Desuscribir manualmente

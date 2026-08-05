@@ -11,6 +11,8 @@ import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/toast'
 import { useCampaignSocket } from '@/hooks/useSocket'
 import { cn, formatearFecha, formatearNumero } from '@/lib/utils'
+import { metaCategoria } from '@/lib/erroresSmtp'
+import ModalReintento from '@/components/campanas/ModalReintento'
 import api from '@/lib/api'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -30,6 +32,9 @@ interface Campana {
 interface SendRow {
   id: number; email: string; nombre?: string; estado: string
   enviado_en?: string; ultimo_error?: string; intentos: number
+  error_categoria?: string | null
+  error_permanente?: number | null
+  error_mensaje?: string | null
 }
 
 interface Progreso {
@@ -91,6 +96,7 @@ export default function DetalleCampana() {
   const [cargando, setCargando] = useState(true)
   const [pagina, setPagina] = useState(1)
   const [totalSends, setTotalSends] = useState(0)
+  const [modalReintento, setModalReintento] = useState(false)
   const logsRef = useRef<HTMLDivElement>(null)
 
   // Cargar estado inicial
@@ -259,6 +265,8 @@ export default function DetalleCampana() {
     ? ((progreso.clicks / progreso.enviados) * 100).toFixed(1)
     : '0'
   const enviando = campana.estado === 'enviando'
+  // Hay algo sin entregar: fallidos o pendientes que nunca llegaron a salir.
+  const hayNoEntregados = progreso.fallidos > 0 || progreso.pendientes > 0
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -282,6 +290,12 @@ export default function DetalleCampana() {
           {(campana.estado === 'completada' || campana.enviados > 0) && (
             <Button variant="outline" onClick={() => navigate(`/reportes/campana/${campana.id}`)}>
               <BarChart2 className="h-4 w-4" /> Ver reporte
+            </Button>
+          )}
+          {/* Reenvío selectivo: solo con la campaña detenida y algo sin entregar */}
+          {!['enviando', 'programada'].includes(campana.estado) && hayNoEntregados && (
+            <Button variant="outline" onClick={() => setModalReintento(true)}>
+              <RefreshCw className="h-4 w-4" /> Reenviar no entregados
             </Button>
           )}
           {campana.estado === 'borrador' && (
@@ -468,9 +482,13 @@ export default function DetalleCampana() {
                       <tr key={s.id} className="border-b border-border/40 hover:bg-secondary/30 transition-colors">
                         <td className="py-2 px-4">
                           <div className="font-medium truncate max-w-[200px]">{s.email}</div>
-                          {s.ultimo_error && (
-                            <div className="text-[11px] text-red-400 truncate max-w-[200px]" title={s.ultimo_error}>
-                              {s.ultimo_error}
+                          {/* Mensaje traducido; el error crudo queda en el tooltip */}
+                          {(s.error_mensaje || s.ultimo_error) && (
+                            <div
+                              className="text-[11px] text-muted-foreground truncate max-w-[220px]"
+                              title={s.ultimo_error || ''}
+                            >
+                              {s.error_mensaje || s.ultimo_error}
                             </div>
                           )}
                         </td>
@@ -481,6 +499,23 @@ export default function DetalleCampana() {
                           {s.intentos > 1 && (
                             <span className="text-[10px] text-muted-foreground ml-1">×{s.intentos}</span>
                           )}
+                          {s.error_categoria && (() => {
+                            const meta = metaCategoria(s.error_categoria)
+                            const Icono = meta.icon
+                            return (
+                              <div className="mt-1 flex items-center gap-1">
+                                <Badge variant={meta.variante as any} className="text-[10px]">
+                                  <Icono className="h-3 w-3" />
+                                  {meta.label}
+                                </Badge>
+                                {s.error_permanente === 1 && (
+                                  <span className="text-[9px] text-red-400" title="No se reintentará">
+                                    permanente
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td className="py-2 px-3 text-xs text-muted-foreground whitespace-nowrap">
                           {s.enviado_en ? formatearFecha(s.enviado_en) : '—'}
@@ -568,6 +603,13 @@ export default function DetalleCampana() {
           </div>
         </CardContent>
       </Card>
+
+      <ModalReintento
+        open={modalReintento}
+        campaignId={campaignId}
+        onClose={() => setModalReintento(false)}
+        onReintentado={cargar}
+      />
     </div>
   )
 }

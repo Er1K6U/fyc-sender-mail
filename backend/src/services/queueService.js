@@ -6,6 +6,7 @@ const { crearTransporter, enviarEmail, esErrorLimiteProveedor } = require('./smt
 const socketService = require('./socketService');
 const settingsService = require('./settingsService');
 const auditService = require('./auditService');
+const errorSmtp = require('./errorSmtpService');
 const logger = require('../config/logger');
 
 // ── Cola principal de envío de emails ────────────────────────────────────────
@@ -255,7 +256,12 @@ async function procesarEnvio(job) {
       [email]
     );
     if (unsub) {
-      await marcarEnvio(pool, sendId, 'fallido', 'Email en lista de desuscripciones');
+      // Permanente a propósito: un desuscrito no debe reaparecer en un reenvío.
+      await marcarEnvio(pool, sendId, 'fallido', 'Email en lista de desuscripciones', null, {
+        categoria: 'otro',
+        permanente: true,
+        mensaje: 'El destinatario está en la lista de desuscripciones y no debe recibir más correos.',
+      });
       await actualizarContadoresCampaña(pool, campaignId, 'fallido');
       socketService.emitirEnvioActualizado(campaignId, {
         sendId, email, estado: 'fallido', motivo: 'Desuscrito',
@@ -337,7 +343,13 @@ async function procesarEnvio(job) {
         sendId, email, estado: 'enviado',
       });
     } else {
-      throw new Error(resultado.error);
+      // Se conserva el código de respuesta SMTP: es la señal más fiable para
+      // clasificar el fallo (5xx permanente / 4xx temporal). Un `new Error`
+      // pelado lo perdería.
+      const fallo = new Error(resultado.error);
+      fallo.responseCode = resultado.codigo;
+      fallo.response = resultado.error;
+      throw fallo;
     }
 
     // Emitir progreso actualizado
@@ -353,30 +365,87 @@ async function procesarEnvio(job) {
       return { skipped: true, motivo: 'Pausada por límite del proveedor SMTP' };
     }
 
+    const clasificacion = errorSmtp.clasificar(error);
     const esUltimoIntento = job.attemptsMade >= job.opts.attempts - 1;
 
-    if (esUltimoIntento) {
-      await marcarEnvio(pool, sendId, 'fallido', error.message);
+    // Un error permanente no mejora reintentando: se cierra el envío ya, sin
+    // gastar los intentos de Bull ni volver a molestar al servidor de destino.
+    if (clasificacion.permanente || esUltimoIntento) {
+      await marcarEnvio(pool, sendId, 'fallido', error.message, null, clasificacion);
       await actualizarContadoresCampaña(pool, campaignId, 'fallido');
+
+      // Limpieza automática: si la dirección está muerta, se desactiva para que
+      // no se le vuelva a enviar. Enviar a direcciones inexistentes de forma
+      // repetida es lo que más daña la reputación del dominio.
+      if (clasificacion.invalidaContacto && contactId) {
+        await invalidarContacto(pool, contactId, email, clasificacion.mensaje);
+      }
+
       socketService.emitirEnvioActualizado(campaignId, {
-        sendId, email, estado: 'fallido', motivo: error.message,
+        sendId, email, estado: 'fallido',
+        motivo: clasificacion.mensaje,
+        categoria: clasificacion.categoria,
+        permanente: clasificacion.permanente,
       });
       await emitirProgresoActual(pool, campaignId);
+    }
+
+    if (clasificacion.permanente) {
+      // Se devuelve en vez de lanzar: lanzar haría que Bull reintentase.
+      return { skipped: true, motivo: `Fallo permanente: ${clasificacion.categoria}` };
     }
 
     throw error; // Bull reintentará
   }
 }
 
+/**
+ * Desactiva una dirección muerta en TODAS las listas donde aparezca.
+ *
+ * El mismo email puede existir como contacto en varias listas; si solo se
+ * desactivara la fila que falló, se le seguiría enviando desde las demás y el
+ * daño a la reputación sería el mismo.
+ */
+async function invalidarContacto(pool, contactId, email, motivo) {
+  const [resultado] = await pool.query(
+    `UPDATE contacts
+     SET email_valido = 0,
+         motivo_invalido = ?,
+         fecha_invalido = NOW()
+     WHERE email = ? AND email_valido = 1`,
+    [String(motivo || '').slice(0, 255), email]
+  );
+
+  if (resultado.affectedRows > 0) {
+    logger.info(
+      `Contacto ${contactId} (${email}) desactivado por dirección inexistente. ` +
+      `Filas afectadas en todas las listas: ${resultado.affectedRows}`
+    );
+  }
+}
+
 // ── Funciones auxiliares ──────────────────────────────────────────────────────
 
-async function marcarEnvio(pool, sendId, estado, error = null, messageId = null) {
+/**
+ * Marca el resultado de un envío.
+ * `ultimo_error` guarda el texto técnico crudo; la clasificación va aparte,
+ * para no perder la evidencia original al traducirla.
+ */
+async function marcarEnvio(pool, sendId, estado, error = null, messageId = null, clasificacion = null) {
   await pool.query(
     `UPDATE campaign_sends
      SET estado = ?, ultimo_error = ?, message_id = ?,
-         enviado_en = ?, intentos = intentos + 1
+         enviado_en = ?, intentos = intentos + 1,
+         error_categoria = ?, error_permanente = ?, error_mensaje = ?
      WHERE id = ?`,
-    [estado, error, messageId, estado === 'enviado' ? new Date() : null, sendId]
+    [
+      estado, error, messageId,
+      estado === 'enviado' ? new Date() : null,
+      clasificacion?.categoria || null,
+      clasificacion ? (clasificacion.permanente ? 1 : 0) : null,
+      clasificacion?.mensaje || null,
+      sendId,
+    ]
   );
 }
 
