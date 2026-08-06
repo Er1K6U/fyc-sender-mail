@@ -138,8 +138,11 @@ export default function DetalleCampana() {
         enviados: p.enviados || 0,
         fallidos: p.fallidos || 0,
         pendientes: p.pendientes || 0,
-        velocidad: p.velocidad || 0,
-        eta_segundos: p.eta_segundos ?? null,
+        // La API devuelve velocidad_por_min y tiempo_restante_seg. Se leían como
+        // `velocidad` y `eta_segundos`, que no existen: de ahí el 0/min fijo y
+        // el "—" permanente en tiempo restante.
+        velocidad: p.velocidad_por_min ?? 0,
+        eta_segundos: p.tiempo_restante_seg ?? null,
         abiertos: rCampana.data.campana.abiertos || 0,
         clicks: rCampana.data.campana.clicks || 0,
         inconsistente: !!p.inconsistente,
@@ -158,7 +161,14 @@ export default function DetalleCampana() {
   // Socket.io en tiempo real
   useCampaignSocket(campana ? campaignId : null, {
     'campaign:progress': (data: any) => {
-      setProgreso(prev => ({ ...prev, ...data }))
+      // El socket emite los mismos nombres que la API; se normalizan aquí para
+      // que no vuelvan a divergir de los que usa la interfaz.
+      setProgreso(prev => ({
+        ...prev,
+        ...data,
+        velocidad: data.velocidad_por_min ?? prev.velocidad,
+        eta_segundos: data.tiempo_restante_seg ?? null,
+      }))
     },
     'campaign:send_update': (data: any) => {
       setSends(prev => {
@@ -583,13 +593,11 @@ export default function DetalleCampana() {
       )}
 
       {/* Métricas en tiempo real */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* La tarjeta de Velocidad se eliminó: el panel de telemetría de arriba ya
+          muestra el ritmo real, y además comparado con el configurado. Tener dos
+          cálculos del mismo dato es lo que hacía que se contradijeran. */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         {[
-          {
-            label: 'Velocidad', icon: Zap, color: 'text-yellow-400', bg: 'bg-yellow-500/10',
-            valor: `${progreso.velocidad}/min`,
-            sub: enviando ? 'En tiempo real' : '—',
-          },
           {
             label: 'Tiempo restante', icon: Clock, color: 'text-blue-400', bg: 'bg-blue-500/10',
             valor: formatEta(progreso.eta_segundos),

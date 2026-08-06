@@ -11,6 +11,19 @@ async function iniciarServidor() {
   try {
     await verificarConexion();
 
+    // El tracking (pixel de apertura y redirect de clicks) se construye sobre
+    // APP_URL. Si falta, las URLs apuntan a localhost y NINGÚN destinatario
+    // puede alcanzarlas: aperturas y clicks quedan a cero sin más síntoma.
+    if (!process.env.APP_URL) {
+      logger.warn(
+        '⚠️  APP_URL no está definida. El tracking de aperturas y clicks apuntará ' +
+        'a http://localhost:3001 y no registrará nada. Defínela en backend/.env ' +
+        'con el dominio público, p. ej. APP_URL=https://midominio.com'
+      );
+    } else if (process.env.NODE_ENV === 'production' && !/^https?:\/\//.test(process.env.APP_URL)) {
+      logger.warn(`⚠️  APP_URL="${process.env.APP_URL}" no incluye el esquema (http:// o https://).`);
+    }
+
     const server = http.createServer(app);
 
     // Inicializar Socket.io

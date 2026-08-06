@@ -7,6 +7,7 @@ const socketService = require('./socketService');
 const settingsService = require('./settingsService');
 const auditService = require('./auditService');
 const errorSmtp = require('./errorSmtpService');
+const htmlTracking = require('./htmlTrackingService');
 const logger = require('../config/logger');
 
 // ── Cola principal de envío de emails ────────────────────────────────────────
@@ -314,15 +315,22 @@ async function procesarEnvio(job) {
       .replace(/\{\{link_unsub\}\}/gi, unsubUrl)
       .replace(/\{\{link_ver_online\}\}/gi, verOnlineUrl);
 
-    // Agregar pixel de tracking de apertura + link de unsub si no están en el HTML
-    const pixelUrl = `${appUrl}/api/tracking/open/${sendId}`;
-    const trackingPixel = `<img src="${pixelUrl}" width="1" height="1" style="display:none" alt="" />`;
-    const unsubFooter = html.includes('{{link_unsub}}') ? '' :
-      `<div style="text-align:center;padding:10px;font-size:11px;color:#888;">
-        <a href="${unsubUrl}" style="color:#888;">Cancelar suscripción</a>
-      </div>`;
-
-    const htmlFinal = html.replace('</body>', `${trackingPixel}${unsubFooter}</body>`);
+    // Tracking: reescritura de enlaces para clicks + pixel de apertura.
+    //
+    // Antes solo se inyectaba el pixel, así que las aperturas se registraban
+    // pero los <a> salían directos al destino y el endpoint de click no se
+    // invocaba jamás: los clicks eran siempre 0.
+    //
+    // El pie de baja se decide sobre htmlTemplate, NO sobre `html`: en `html`
+    // los {{link_unsub}} ya están sustituidos, así que la comprobación anterior
+    // daba siempre falso y el pie se añadía incluso en plantillas que ya
+    // llevaban su propio enlace de baja, duplicándolo.
+    const htmlFinal = htmlTracking.prepararHtml(html, {
+      sendId,
+      appUrl,
+      unsubUrl,
+      incluirPieBaja: !/\{\{\s*link_unsub\s*\}\}/i.test(htmlTemplate),
+    });
 
     // Generar Message-ID único
     const messageId = `<${uuid()}@${fromEmail.split('@')[1]}>`;
