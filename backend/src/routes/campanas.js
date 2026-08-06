@@ -429,6 +429,15 @@ router.post('/:id/reanudar', async (req, res, next) => {
       return res.status(409).json({ error: 'Solo se pueden reanudar campañas pausadas' });
     }
 
+    // Reanudación MANUAL: si una persona interviene, se asume que corrigió el
+    // problema, así que la escalada del backoff por 454 empieza de cero.
+    // El scheduler llama a reanudarCampaña directamente, sin pasar por aquí,
+    // de modo que la reanudación automática sí conserva la escalada.
+    await pool.query(
+      'UPDATE campaigns SET pausas_por_limite = 0 WHERE id = ?',
+      [req.params.id]
+    );
+
     reanudarCampaña(req.params.id).catch(err =>
       logger.error(`Error al reanudar campaña ${req.params.id}:`, err)
     );

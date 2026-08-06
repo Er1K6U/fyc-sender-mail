@@ -61,6 +61,25 @@ function cerrarTodosLosTransporters() {
 const ultimoAvisoDiferido = new Map();
 const MS_ENTRE_AVISOS = 60_000;
 
+// Envíos correctos tras una pausa por 454 que demuestran que la cuenta se
+// recuperó. A partir de ahí, un nuevo 454 se trata como incidente nuevo y la
+// escalada del backoff vuelve a empezar en vez de seguir subiendo.
+const ENVIOS_PARA_REINICIAR_BACKOFF = 10;
+
+// Suelo del diferimiento de la compuerta horaria.
+// Valor elegido por simulación junto con MARGEN_ESPACIADO_PCT: con 15 s y un 2 %
+// de margen, una campaña de 507 correos a 120/h necesita ~8 diferimientos en vez
+// de 176, manteniendo el ritmo en el 98 % del configurado.
+const ESPERA_MINIMA_GATE_MS = 15_000;
+
+// Margen de seguridad del espaciado al encolar.
+// Sin él, el espaciado apunta EXACTAMENTE al tope horario y la compuerta —que
+// bloquea al alcanzarlo— salta continuamente: el encolado y la compuerta frenan
+// a la vez. Con un 2 % el ritmo natural queda justo por debajo del tope y la
+// compuerta solo actúa ante algo anómalo, como otra campaña consumiendo la misma
+// cuenta SMTP.
+const MARGEN_ESPACIADO_PCT = 2;
+
 /**
  * Compuerta de límite horario. Se evalúa ANTES de cada envío.
  *
@@ -92,8 +111,10 @@ async function verificarLimiteHorario(pool, campaignId, smtpConfigId, limiteCamp
     // Ventana llena: el hueco se abre cuando el más antiguo cumple 1 hora.
     const masAntiguo = fila?.mas_antiguo ? new Date(fila.mas_antiguo).getTime() : ahora;
     const libreEn = masAntiguo + 3_600_000;
-    // Mínimo 30 s para no reintentar en bucle si el reloj queda justo.
-    const espera = Math.max(30_000, libreEn - ahora);
+    // Suelo pequeño: solo evita el bucle cerrado cuando el hueco está al caer.
+    // Con un suelo grande, el espaciado normal (que ya cumple el tope) quedaría
+    // frenado una segunda vez y el ritmo real caería por debajo del configurado.
+    const espera = Math.max(ESPERA_MINIMA_GATE_MS, libreEn - ahora);
 
     if (espera > esperaMs) {
       esperaMs = espera;
@@ -732,7 +753,11 @@ async function encolarCampaña(campaignId) {
 
   const espaciadoPorMin = Math.ceil(60_000 / emailsPorMin);
   const espaciadoPorHora = emailsPorHora > 0 ? Math.ceil(3_600_000 / emailsPorHora) : 0;
-  const delayBaseMs = Math.max(espaciadoPorMin, espaciadoPorHora); // ms entre emails
+  // El margen deja el ritmo natural justo por debajo del tope, para que la
+  // compuerta horaria no esté rozando el techo en cada envío.
+  const delayBaseMs = Math.ceil(
+    Math.max(espaciadoPorMin, espaciadoPorHora) * (1 + MARGEN_ESPACIADO_PCT / 100)
+  );
 
   // Jitter: randomización ±jitter_pct sobre el intervalo base para un patrón menos robótico.
   const jitterPct = Math.max(0, Math.min(100, throttleGlobal.jitter_pct || 0));
@@ -837,12 +862,38 @@ async function pausarPorLimiteProveedor(campaignId, smtpConfigId, mensajeError) 
   const pool = db();
   const baseMin = Math.max(1, await settingsService.getNumero('pausa_limite_base_min'));
 
-  // Nº de pausas previas para calcular el backoff de ESTA pausa.
   const [[previo]] = await pool.query(
-    'SELECT pausas_por_limite FROM campaigns WHERE id = ?',
+    'SELECT pausas_por_limite, ultima_pausa_limite FROM campaigns WHERE id = ?',
     [campaignId]
   );
-  const intento = (previo?.pausas_por_limite || 0) + 1;
+
+  // ¿Es la continuación del incidente anterior o uno nuevo?
+  //
+  // La escalada solo tiene sentido dentro de una MISMA racha de 454. Si tras la
+  // pausa anterior la campaña estuvo enviando con normalidad, la cuenta se
+  // recuperó y esto es un incidente nuevo: la escalada vuelve a empezar.
+  //
+  // Sin esta comprobación el contador solo subía, así que a partir del cuarto
+  // 454 toda pausa era de 2 horas para siempre y el ritmo real caía ~8 veces.
+  let pausasPrevias = previo?.pausas_por_limite || 0;
+
+  if (pausasPrevias > 0 && previo?.ultima_pausa_limite) {
+    const [[recuperacion]] = await pool.query(
+      `SELECT COUNT(*) AS enviados_desde
+       FROM campaign_sends
+       WHERE campaign_id = ? AND estado = 'enviado' AND enviado_en > ?`,
+      [campaignId, previo.ultima_pausa_limite]
+    );
+    if (Number(recuperacion?.enviados_desde || 0) >= ENVIOS_PARA_REINICIAR_BACKOFF) {
+      logger.info(
+        `Campaña ${campaignId}: la cuenta se recuperó tras la pausa anterior ` +
+        `(${recuperacion.enviados_desde} envíos correctos). Se reinicia la escalada del backoff.`
+      );
+      pausasPrevias = 0;
+    }
+  }
+
+  const intento = pausasPrevias + 1;
 
   // Backoff progresivo con tope: base × 2^(intento-1), máximo 8× base.
   const factor = Math.min(2 ** (intento - 1), 8);
@@ -852,11 +903,12 @@ async function pausarPorLimiteProveedor(campaignId, smtpConfigId, mensajeError) 
     `UPDATE campaigns
      SET estado = 'pausada',
          pausa_motivo = 'limite_smtp',
-         pausas_por_limite = pausas_por_limite + 1,
+         pausas_por_limite = ?,
+         ultima_pausa_limite = NOW(),
          ultimo_error_smtp = ?,
          reanudar_en = DATE_ADD(NOW(), INTERVAL ? MINUTE)
      WHERE id = ? AND estado = 'enviando'`,
-    [String(mensajeError || '').slice(0, 500), esperaMin, campaignId]
+    [intento, String(mensajeError || '').slice(0, 500), esperaMin, campaignId]
   );
 
   // Otro worker ya pausó la campaña: no duplicar aviso ni backoff.
