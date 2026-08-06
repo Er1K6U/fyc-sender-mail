@@ -4,7 +4,7 @@ import {
   Send, Plus, Play, Pause, XCircle, BarChart2,
   Clock, CheckCircle2, FileText,
   ChevronRight, Trash2, Eye, RefreshCw,
-  ShieldAlert, OctagonAlert, TrendingDown,
+  ShieldAlert, OctagonAlert, TrendingDown, User as UserIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -37,6 +37,9 @@ interface Campana {
   ritmo_bajo?: boolean
   ritmo_ultima_hora?: number
   ritmo_configurado?: number
+  // Quién la creó (el admin ve las de todos)
+  creador_nombre?: string
+  es_propia?: number
 }
 
 const ESTADO_CONFIG: Record<string, { label: string; variant: any; icon: React.ReactNode; color: string }> = {
@@ -200,6 +203,12 @@ export default function Campanas() {
                         <Badge variant={cfg.variant as any}>
                           {cfg.icon} {cfg.label}
                         </Badge>
+                        {/* El admin ve las de todos: hay que saber de quién es */}
+                        {esAdmin && campana.es_propia !== 1 && campana.creador_nombre && (
+                          <Badge variant="outline" className="text-[10px]">
+                            <UserIcon className="h-3 w-3" /> {campana.creador_nombre}
+                          </Badge>
+                        )}
                       </div>
                       <p className="text-sm text-muted-foreground mt-0.5 truncate">
                         {campana.asunto}

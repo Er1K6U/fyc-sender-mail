@@ -30,6 +30,9 @@ interface Campana {
   ultimo_error_smtp?: string | null
   // Corte de seguridad por fallos consecutivos
   fallos_consecutivos?: number
+  // Quién la creó (el admin ve las de todos)
+  creador_nombre?: string
+  es_propia?: number
 }
 
 interface SendRow {
@@ -719,6 +722,10 @@ export default function DetalleCampana() {
             <div>
               <p className="text-muted-foreground text-xs mb-1">Creada</p>
               <p className="font-medium">{formatearFecha(campana.created_at)}</p>
+              {/* Solo se muestra si es de otro: el admin ve las de todos */}
+              {campana.es_propia !== 1 && campana.creador_nombre && (
+                <p className="text-xs text-muted-foreground">por {campana.creador_nombre}</p>
+              )}
             </div>
           </div>
         </CardContent>

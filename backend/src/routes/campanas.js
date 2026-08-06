@@ -31,6 +31,8 @@ function validar(req, res, next) {
 router.get('/', async (req, res, next) => {
   try {
     const pool = db();
+    // El admin ve las campañas de todos; el resto, solo las suyas.
+    const filtroLista = acceso.filtroCampana(req.usuario, 'c');
     const [campanas] = await pool.query(
       `SELECT c.id, c.nombre, c.asunto, c.from_nombre, c.from_email,
               c.estado, c.total_envios, c.enviados, c.fallidos, c.abiertos,
@@ -38,14 +40,17 @@ router.get('/', async (req, res, next) => {
               c.created_at, c.emails_por_hora, c.pausa_motivo, c.reanudar_en,
               cl.nombre AS lista_nombre,
               t.nombre AS template_nombre,
-              s.nombre AS smtp_nombre
+              s.nombre AS smtp_nombre,
+              u.nombre AS creador_nombre,
+              (c.user_id = ?) AS es_propia
        FROM campaigns c
        LEFT JOIN contact_lists cl ON cl.id = c.list_id
        LEFT JOIN templates t ON t.id = c.template_id
        LEFT JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.user_id = ? AND c.deleted_at IS NULL
+       LEFT JOIN users u ON u.id = c.user_id
+       WHERE c.deleted_at IS NULL AND ${filtroLista.sql}
        ORDER BY c.created_at DESC`,
-      [req.usuario.id]
+      [req.usuario.id, ...filtroLista.params]
     );
 
     // Aviso de ritmo bajo, con UNA consulta agregada para todas las activas
@@ -257,17 +262,21 @@ router.post('/:id/restaurar', soloAdmin, async (req, res, next) => {
 router.get('/:id', async (req, res, next) => {
   try {
     const pool = db();
+    const filtroDetalle = acceso.filtroCampana(req.usuario, 'c');
     const [[campana]] = await pool.query(
       `SELECT c.*,
               cl.nombre AS lista_nombre, cl.total_contactos AS lista_total,
               t.nombre AS template_nombre,
-              s.nombre AS smtp_nombre, s.limite_dia, s.enviados_hoy
+              s.nombre AS smtp_nombre, s.limite_dia, s.enviados_hoy,
+              u.nombre AS creador_nombre,
+              (c.user_id = ?) AS es_propia
        FROM campaigns c
        LEFT JOIN contact_lists cl ON cl.id = c.list_id
        LEFT JOIN templates t ON t.id = c.template_id
        LEFT JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
-      [req.params.id, req.usuario.id]
+       LEFT JOIN users u ON u.id = c.user_id
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${filtroDetalle.sql}`,
+      [req.usuario.id, req.params.id, ...filtroDetalle.params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
     res.json({ campana });
@@ -387,8 +396,9 @@ router.put(
     try {
       const pool = db();
       const [[campana]] = await pool.query(
-        'SELECT id, estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-        [req.params.id, req.usuario.id]
+        `SELECT id, estado FROM campaigns c
+         WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+        [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
       );
       if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
       if (['enviando', 'completada'].includes(campana.estado)) {
@@ -448,8 +458,9 @@ router.delete('/:id', soloAdmin, async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-      [req.params.id, req.usuario.id]
+      `SELECT estado FROM campaigns c
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
     if (campana.estado === 'enviando') {
@@ -489,8 +500,8 @@ router.post('/:id/iniciar', async (req, res, next) => {
       `SELECT c.*, s.verificado, s.limite_dia, s.enviados_hoy
        FROM campaigns c
        JOIN smtp_configs s ON s.id = c.smtp_config_id
-       WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
-      [req.params.id, req.usuario.id]
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
 
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
@@ -540,8 +551,9 @@ router.post('/:id/pausar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-      [req.params.id, req.usuario.id]
+      `SELECT estado FROM campaigns c
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
     if (campana.estado !== 'enviando') {
@@ -569,8 +581,9 @@ router.post('/:id/reanudar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-      [req.params.id, req.usuario.id]
+      `SELECT estado FROM campaigns c
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
     if (campana.estado !== 'pausada') {
@@ -608,8 +621,9 @@ router.post('/:id/cancelar', async (req, res, next) => {
   try {
     const pool = db();
     const [[campana]] = await pool.query(
-      'SELECT estado FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-      [req.params.id, req.usuario.id]
+      `SELECT estado FROM campaigns c
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
@@ -848,8 +862,9 @@ router.get(
 
       // Verificar pertenencia
       const [[campana]] = await pool.query(
-        'SELECT id FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
-        [req.params.id, req.usuario.id]
+        `SELECT id FROM campaigns c
+         WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+        [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
       );
       if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
@@ -896,8 +911,9 @@ router.get('/:id/progreso', async (req, res, next) => {
     const pool = db();
     const [[campana]] = await pool.query(
       `SELECT enviados, fallidos, total_envios, estado, iniciada_en, completada_en
-       FROM campaigns WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
-      [req.params.id, req.usuario.id]
+       FROM campaigns c
+       WHERE c.id = ? AND c.deleted_at IS NULL AND ${acceso.filtroCampana(req.usuario, 'c').sql}`,
+      [req.params.id, ...acceso.filtroCampana(req.usuario, 'c').params]
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 

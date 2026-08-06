@@ -36,6 +36,21 @@ function filtroVisibilidad(usuario, alias) {
 }
 
 /**
+ * Filtro de visibilidad de CAMPAÑAS.
+ *
+ * Las campañas NO son compartibles, a diferencia de listas y plantillas: cada
+ * usuario ve las suyas y el admin las ve todas. No hay flag `compartida` ni
+ * está previsto que lo haya.
+ *
+ * @param {string} alias Alias de la tabla campaigns en la consulta.
+ * @returns {{sql: string, params: any[]}}
+ */
+function filtroCampana(usuario, alias = 'c') {
+  if (esAdmin(usuario)) return { sql: '1 = 1', params: [] };
+  return { sql: `${alias}.user_id = ?`, params: [usuario.id] };
+}
+
+/**
  * ¿Puede el usuario VER este recurso? (propio, compartido, o es admin)
  */
 async function puedeVer(tipo, id, usuario) {
@@ -135,6 +150,7 @@ async function filtrarContactosEditables(ids, usuario) {
 module.exports = {
   esAdmin,
   filtroVisibilidad,
+  filtroCampana,
   puedeVer,
   puedeEditar,
   puedeVerContacto,

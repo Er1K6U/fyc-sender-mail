@@ -24,9 +24,10 @@ router.get('/stats', async (req, res, next) => {
     const esAdmin = acceso.esAdmin(req.usuario);
     const userId = req.usuario.id;
 
-    // Filtro de campañas según rol.
-    const filtroCampanas = esAdmin ? '' : 'AND c.user_id = ?';
-    const paramsCampanas = esAdmin ? [] : [userId];
+    // Filtro de campañas según rol (misma regla que el resto de la aplicación).
+    const filtro = acceso.filtroCampana(req.usuario, 'c');
+    const filtroCampanas = `AND ${filtro.sql}`;
+    const paramsCampanas = filtro.params;
 
     // ── Contactos visibles ──
     // Siguen la visibilidad de su lista, no la del propio contacto.

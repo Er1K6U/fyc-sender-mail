@@ -1,6 +1,7 @@
 const express = require('express');
 const { db } = require('../config/database');
 const { autenticar: verificarToken } = require('../middleware/auth');
+const acceso = require('../services/accesoService');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -8,16 +9,20 @@ router.use(verificarToken);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// Verifica que la campaña pertenece al usuario autenticado
-async function obtenerCampana(pool, campaignId, userId) {
+// Carga una campaña aplicando la visibilidad por rol:
+// el admin llega a las de cualquier usuario; el resto solo a las suyas.
+async function obtenerCampana(pool, campaignId, usuario) {
+  const filtro = acceso.filtroCampana(usuario, 'c');
   const [[campana]] = await pool.query(
     `SELECT c.*, cl.nombre AS lista_nombre, cl.id AS list_id_val,
-            sc.host AS smtp_host, sc.from_email AS smtp_from_email
+            sc.host AS smtp_host, sc.from_email AS smtp_from_email,
+            u.nombre AS creador_nombre
      FROM campaigns c
      LEFT JOIN contact_lists cl ON cl.id = c.list_id
      LEFT JOIN smtp_configs sc ON sc.id = c.smtp_config_id
-     WHERE c.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
-    [campaignId, userId]
+     LEFT JOIN users u ON u.id = c.user_id
+     WHERE c.id = ? AND c.deleted_at IS NULL AND ${filtro.sql}`,
+    [campaignId, ...filtro.params]
   );
   return campana;
 }
@@ -27,7 +32,8 @@ async function obtenerCampana(pool, campaignId, userId) {
 router.get('/general', async (req, res) => {
   try {
     const pool = db();
-    const userId = req.usuario.id;
+    // Mismo criterio que el resto: el admin agrega las campañas de todos.
+    const filtro = acceso.filtroCampana(req.usuario, 'c');
 
     const [[totales]] = await pool.query(
       `SELECT
@@ -40,9 +46,9 @@ router.get('/general', async (req, res) => {
          COUNT(CASE WHEN estado = 'completada' THEN 1 END) AS completadas,
          COUNT(CASE WHEN estado = 'enviando' THEN 1 END) AS en_envio,
          COUNT(CASE WHEN estado = 'borrador' THEN 1 END) AS borradores
-       FROM campaigns
-       WHERE user_id = ? AND deleted_at IS NULL`,
-      [userId]
+       FROM campaigns c
+       WHERE c.deleted_at IS NULL AND ${filtro.sql}`,
+      filtro.params
     );
 
     // Últimas 6 campañas completadas para gráfica de tendencia
@@ -53,11 +59,11 @@ router.get('/general', async (req, res) => {
               COALESCE(clicks, 0) AS clicks,
               COALESCE(fallidos, 0) AS fallidos,
               completada_en, created_at
-       FROM campaigns
-       WHERE user_id = ? AND estado = 'completada' AND deleted_at IS NULL
+       FROM campaigns c
+       WHERE c.estado = 'completada' AND c.deleted_at IS NULL AND ${filtro.sql}
        ORDER BY completada_en DESC
        LIMIT 8`,
-      [userId]
+      filtro.params
     );
 
     // Tasa de apertura promedio (solo campañas completadas con envíos)
@@ -66,10 +72,10 @@ router.get('/general', async (req, res) => {
          AVG(CASE WHEN enviados > 0 THEN (abiertos / enviados) * 100 ELSE 0 END) AS tasa_apertura_avg,
          AVG(CASE WHEN enviados > 0 THEN (clicks / enviados) * 100 ELSE 0 END) AS tasa_clicks_avg,
          AVG(CASE WHEN total_envios > 0 THEN (fallidos / total_envios) * 100 ELSE 0 END) AS tasa_error_avg
-       FROM campaigns
-       WHERE user_id = ? AND estado = 'completada' AND enviados > 0
-         AND deleted_at IS NULL`,
-      [userId]
+       FROM campaigns c
+       WHERE c.estado = 'completada' AND c.enviados > 0
+         AND c.deleted_at IS NULL AND ${filtro.sql}`,
+      filtro.params
     );
 
     // Actividad diaria (últimos 30 días)
@@ -77,13 +83,13 @@ router.get('/general', async (req, res) => {
       `SELECT DATE(cs.enviado_en) AS fecha, COUNT(*) AS enviados
        FROM campaign_sends cs
        JOIN campaigns c ON c.id = cs.campaign_id
-       WHERE c.user_id = ?
+       WHERE ${filtro.sql}
          AND c.deleted_at IS NULL
          AND cs.estado = 'enviado'
          AND cs.enviado_en >= DATE_SUB(NOW(), INTERVAL 30 DAY)
        GROUP BY DATE(cs.enviado_en)
        ORDER BY fecha`,
-      [userId]
+      filtro.params
     );
 
     res.json({
@@ -117,7 +123,7 @@ router.get('/general', async (req, res) => {
 router.get('/campana/:id', async (req, res) => {
   try {
     const pool = db();
-    const campana = await obtenerCampana(pool, req.params.id, req.usuario.id);
+    const campana = await obtenerCampana(pool, req.params.id, req.usuario);
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     // Desglose de estados de envío
@@ -241,7 +247,7 @@ router.get('/campana/:id', async (req, res) => {
 router.get('/campana/:id/aperturas', async (req, res) => {
   try {
     const pool = db();
-    const campana = await obtenerCampana(pool, req.params.id, req.usuario.id);
+    const campana = await obtenerCampana(pool, req.params.id, req.usuario);
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     const pagina    = Math.max(1, parseInt(req.query.pagina || '1'));
@@ -283,7 +289,7 @@ router.get('/campana/:id/aperturas', async (req, res) => {
 router.get('/campana/:id/clicks', async (req, res) => {
   try {
     const pool = db();
-    const campana = await obtenerCampana(pool, req.params.id, req.usuario.id);
+    const campana = await obtenerCampana(pool, req.params.id, req.usuario);
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     const pagina    = Math.max(1, parseInt(req.query.pagina || '1'));
@@ -344,7 +350,7 @@ router.get('/campana/:id/clicks', async (req, res) => {
 router.get('/campana/:id/no-entregados', async (req, res) => {
   try {
     const pool = db();
-    const campana = await obtenerCampana(pool, req.params.id, req.usuario.id);
+    const campana = await obtenerCampana(pool, req.params.id, req.usuario);
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     const pagina    = Math.max(1, parseInt(req.query.pagina || '1'));
@@ -390,7 +396,7 @@ router.get('/campana/:id/no-entregados', async (req, res) => {
 router.get('/campana/:id/exportar', async (req, res) => {
   try {
     const pool = db();
-    const campana = await obtenerCampana(pool, req.params.id, req.usuario.id);
+    const campana = await obtenerCampana(pool, req.params.id, req.usuario);
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
     const [rows] = await pool.query(
