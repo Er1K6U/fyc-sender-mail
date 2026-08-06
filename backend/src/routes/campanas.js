@@ -13,6 +13,7 @@ const auditService = require('../services/auditService');
 const smtpAcceso = require('../services/smtpAccesoService');
 const acceso = require('../services/accesoService');
 const telemetriaService = require('../services/telemetriaService');
+const socketService = require('../services/socketService');
 const settingsService = require('../services/settingsService');
 const logger = require('../config/logger');
 
@@ -951,6 +952,21 @@ router.get('/:id/progreso', async (req, res, next) => {
         ? Math.ceil(pendientes / velocidadPorMin) * 60
         : null,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/campanas/:id/logs ────────────────────────────────────────────────
+// Logs recientes. Sirve para la carga inicial y como respaldo por sondeo cuando
+// el tiempo real no está disponible (proxy sin WebSocket, red inestable...).
+router.get('/:id/logs', async (req, res, next) => {
+  try {
+    const pool = db();
+    const campana = await campanaPropia(pool, req);
+    if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    res.json({ logs: socketService.logsDe(req.params.id) });
   } catch (error) {
     next(error);
   }

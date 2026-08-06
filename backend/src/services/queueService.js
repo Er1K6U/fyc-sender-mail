@@ -685,6 +685,9 @@ async function emitirProgresoActual(pool, campaignId) {
     // Cerrar el pool SMTP y liberar sus conexiones
     cerrarTodosLosTransporters();
     ultimoAvisoDiferido.delete(campaignId);
+    // El búfer de logs se libera con retraso: al terminar es justo cuando el
+    // usuario quiere leer qué pasó.
+    setTimeout(() => socketService.limpiarLogs(campaignId), 10 * 60_000).unref?.();
   }
 }
 

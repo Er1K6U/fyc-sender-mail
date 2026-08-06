@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { io, Socket } from 'socket.io-client'
 
 type EventMap = Record<string, (...args: any[]) => void>
@@ -12,20 +12,62 @@ const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3001' : window.locati
 function getSocket(): Socket {
   if (!socketSingleton) {
     socketSingleton = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
+      // ORDEN IMPORTANTE: primero long-polling, luego mejora a WebSocket.
+      //
+      // Estaba al revés ('websocket' primero), que es justo lo que rompe detrás
+      // de un proxy: si Nginx no reenvía las cabeceras Upgrade/Connection, el
+      // handshake de WebSocket falla o se queda colgado y la conexión nunca se
+      // establece. El long-polling es HTTP corriente y atraviesa cualquier
+      // proxy; Socket.io mejora a WebSocket solo si el entorno lo permite.
+      transports: ['polling', 'websocket'],
+      upgrade: true,
       autoConnect: true,
       reconnection: true,
-      reconnectionAttempts: 10,
+      // Sin tope de reintentos: antes se rendía a los 10 y ya no volvía nunca,
+      // aunque el servidor se recuperara.
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 2000,
+      reconnectionDelayMax: 15000,
+      timeout: 20000,
     })
-    socketSingleton.on('connect', () =>
-      console.log('[Socket.io] Conectado:', socketSingleton?.id)
-    )
-    socketSingleton.on('disconnect', (reason) =>
+
+    socketSingleton.on('connect', () => {
+      console.log('[Socket.io] Conectado:', socketSingleton?.id,
+        '· transporte:', socketSingleton?.io?.engine?.transport?.name)
+      notificarEstado(true)
+    })
+    socketSingleton.on('disconnect', (reason) => {
       console.log('[Socket.io] Desconectado:', reason)
-    )
+      notificarEstado(false)
+    })
+    socketSingleton.on('connect_error', (err) => {
+      console.warn('[Socket.io] Error de conexión:', err.message)
+      notificarEstado(false)
+    })
   }
   return socketSingleton
+}
+
+// ── Estado de conexión compartido ────────────────────────────────────────────
+// Permite que la interfaz avise cuando no hay tiempo real y active el respaldo
+// por sondeo, en vez de quedarse en silencio mostrando datos congelados.
+const suscriptoresEstado = new Set<(conectado: boolean) => void>()
+
+function notificarEstado(conectado: boolean) {
+  suscriptoresEstado.forEach(fn => fn(conectado))
+}
+
+export function useEstadoSocket(): boolean {
+  const [conectado, setConectado] = useState(() => getSocket().connected)
+
+  useEffect(() => {
+    const socket = getSocket()
+    setConectado(socket.connected)
+    suscriptoresEstado.add(setConectado)
+    return () => { suscriptoresEstado.delete(setConectado) }
+  }, [])
+
+  return conectado
 }
 
 /**

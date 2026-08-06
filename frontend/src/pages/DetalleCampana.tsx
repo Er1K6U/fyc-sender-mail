@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/toast'
-import { useCampaignSocket } from '@/hooks/useSocket'
+import { useCampaignSocket, useEstadoSocket } from '@/hooks/useSocket'
 import { cn, formatearFecha, formatearNumero } from '@/lib/utils'
 import { metaCategoria } from '@/lib/erroresSmtp'
 import ModalReintento from '@/components/campanas/ModalReintento'
@@ -107,19 +107,30 @@ export default function DetalleCampana() {
   const [modalReintento, setModalReintento] = useState(false)
   const [reencolando, setReencolando] = useState(false)
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null)
+  const socketConectado = useEstadoSocket()
   const logsRef = useRef<HTMLDivElement>(null)
 
   // Cargar estado inicial
   const cargar = async () => {
     try {
-      const [rCampana, rProgreso, rSends, rTelemetria] = await Promise.all([
+      const [rCampana, rProgreso, rSends, rTelemetria, rLogs] = await Promise.all([
         api.get(`/campanas/${campaignId}`),
         api.get(`/campanas/${campaignId}/progreso`),
         api.get(`/campanas/${campaignId}/sends?pagina=1&por_pagina=50`),
         // Snapshot inicial; a partir de aquí llega por socket cada 5 s.
         api.get(`/campanas/${campaignId}/telemetria`).catch(() => null),
+        // Logs recientes del servidor: antes solo existían en vuelo, así que un
+        // refresco los perdía y sin socket no aparecía ninguno.
+        api.get(`/campanas/${campaignId}/logs`).catch(() => null),
       ])
       if (rTelemetria) setTelemetria(rTelemetria.data)
+      if (rLogs?.data?.logs) {
+        setLogs(rLogs.data.logs.map((l: any) => ({
+          nivel: l.nivel,
+          mensaje: l.mensaje,
+          ts: new Date(l.timestamp).getTime(),
+        })))
+      }
       setCampana(rCampana.data.campana)
       const p = rProgreso.data
       setProgreso({
@@ -214,6 +225,36 @@ export default function DetalleCampana() {
   useEffect(() => {
     if (logsRef.current) logsRef.current.scrollTop = 0
   }, [logs])
+
+  // ── Respaldo por sondeo ──
+  // Si el tiempo real no está disponible (proxy sin WebSocket, red caída), se
+  // consultan telemetría y logs cada 5 s para que el contador y el panel sigan
+  // vivos. Con socket conectado no se sondea nada.
+  useEffect(() => {
+    if (socketConectado) return
+    if (!campana || ['borrador', 'completada'].includes(campana.estado)) return
+
+    let cancelado = false
+    const sondear = async () => {
+      try {
+        const [rTel, rLogs] = await Promise.all([
+          api.get(`/campanas/${campaignId}/telemetria`),
+          api.get(`/campanas/${campaignId}/logs`),
+        ])
+        if (cancelado) return
+        setTelemetria(rTel.data)
+        setLogs(rLogs.data.logs.map((l: any) => ({
+          nivel: l.nivel, mensaje: l.mensaje, ts: new Date(l.timestamp).getTime(),
+        })))
+      } catch {
+        /* silencioso: el siguiente ciclo reintenta */
+      }
+    }
+
+    sondear()
+    const id = setInterval(sondear, 5000)
+    return () => { cancelado = true; clearInterval(id) }
+  }, [socketConectado, campaignId, campana?.estado])
 
   // ── Cuenta regresiva de la pausa automática por límite del proveedor ──
   const pausadaPorLimite =
@@ -670,7 +711,23 @@ export default function DetalleCampana() {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">Log en tiempo real</h2>
-            <span className="text-xs text-muted-foreground">{logs.length} entradas</span>
+            {/* Estado real de la conexión: si falla, se ve, en vez de quedarse
+                en silencio mostrando datos congelados */}
+            <span
+              className="text-[10px] flex items-center gap-1.5"
+              title={socketConectado
+                ? 'Conectado por Socket.io'
+                : 'Sin tiempo real: actualizando cada 5 s por consulta directa'}
+            >
+              <span className={cn(
+                'w-1.5 h-1.5 rounded-full',
+                socketConectado ? 'bg-green-400' : 'bg-yellow-400 animate-pulse'
+              )} />
+              <span className={socketConectado ? 'text-muted-foreground' : 'text-yellow-400'}>
+                {socketConectado ? 'En vivo' : 'Modo consulta'}
+              </span>
+              <span className="text-muted-foreground">· {logs.length}</span>
+            </span>
           </div>
           <Card>
             <div

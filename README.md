@@ -282,6 +282,61 @@ una hora, momento en que hay un hueco garantizado.
 
 ---
 
+## Tiempo real (Socket.io) tras un proxy
+
+El log en vivo, el contador al próximo envío y las barras de consumo llegan por
+Socket.io. La aplicación entra por **long-polling** (HTTP corriente, atraviesa
+cualquier proxy) y **mejora a WebSocket** solo si el entorno lo permite, así que
+funciona incluso sin configurar nada. Aun así, con WebSocket va mejor: menos
+peticiones y menos latencia.
+
+### Plesk / Nginx
+
+En **Plesk → Dominio → Apache & nginx Settings → Additional nginx directives**:
+
+```nginx
+location /socket.io/ {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+
+    # Estas dos son las que habilitan WebSocket. Sin ellas todo sigue
+    # funcionando, pero solo por long-polling.
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Sin esto la conexión se corta cada 60 s y se reconecta en bucle.
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_buffering off;
+}
+```
+
+Si en Plesk está marcado **"Proxy mode"**, desmárcalo o añade el bloque anterior:
+el proxy por defecto de Plesk no reenvía las cabeceras `Upgrade`.
+
+### `APP_URL` debe coincidir EXACTAMENTE con el navegador
+
+Socket.io valida el origen del handshake. Si `APP_URL` en `backend/.env` no
+coincide con lo que ves en la barra de direcciones, el tiempo real no conecta.
+Se toleran la barra final y la variante `www.`, pero no el esquema:
+`http://` frente a `https://` **sí** rompe la conexión.
+
+### Comprobar si conecta
+
+El panel de log muestra el estado: **"En vivo"** con punto verde si hay
+Socket.io, o **"Modo consulta"** con punto amarillo si está usando el respaldo.
+En modo consulta todo sigue actualizándose, cada 5 segundos por REST.
+
+Para el detalle técnico, la consola del navegador registra el transporte en uso
+(`polling` o `websocket`) al conectar.
+
+---
+
 ## Roles y acceso a cuentas SMTP
 
 | Recurso | Admin | Editor |
