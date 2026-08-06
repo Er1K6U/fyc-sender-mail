@@ -21,6 +21,7 @@ const reportesRoutes = require('./routes/reportes');
 const usuariosRoutes = require('./routes/usuarios');
 const settingsRoutes = require('./routes/settings');
 const auditoriaRoutes = require('./routes/auditoria');
+const dashboardRoutes = require('./routes/dashboard');
 
 const app = express();
 
@@ -89,6 +90,7 @@ app.use('/api/reportes', reportesRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/auditoria', auditoriaRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -101,10 +103,12 @@ app.get('/api/health', (req, res) => {
 
 // SPA fallback en producción
 if (process.env.NODE_ENV === 'production') {
-  app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api')) {
-      res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
-    }
+  app.get('*', (req, res, next) => {
+    // Sin este next(), una ruta /api inexistente entraba aquí, no respondía
+    // NADA y dejaba la petición colgada hasta que el cliente agotaba su
+    // timeout (30 s). Cualquier 404 de API parecía "la app va lentísima".
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
   });
 }
 

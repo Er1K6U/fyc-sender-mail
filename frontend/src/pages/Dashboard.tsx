@@ -23,6 +23,8 @@ interface StatsGlobales {
     total_envios: number
     created_at: string
   }>
+  /** 'global' para admin, 'propio' para el resto */
+  alcance?: 'global' | 'propio'
 }
 
 const estadoBadge: Record<string, { label: string; variant: any; icon: React.ReactNode }> = {
@@ -36,19 +38,16 @@ const estadoBadge: Record<string, { label: string; variant: any; icon: React.Rea
 export default function Dashboard() {
   const [stats, setStats] = useState<StatsGlobales | null>(null)
   const [cargando, setCargando] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     api.get('/dashboard/stats')
-      .then(r => setStats(r.data))
-      .catch(() => {
-        // Datos de muestra mientras el endpoint no existe aún
-        setStats({
-          total_contactos: 0,
-          total_campanas: 0,
-          total_enviados: 0,
-          tasa_apertura_promedio: 0,
-          campanas_recientes: [],
-        })
+      .then(r => { setStats(r.data); setError(null) })
+      .catch(err => {
+        // Antes se rellenaba con ceros al fallar, así que un error de red o un
+        // endpoint caído se veía igual que "no hay datos". Ahora se distingue.
+        setError(err.response?.data?.error || 'No se pudieron cargar las estadísticas')
+        setStats(null)
       })
       .finally(() => setCargando(false))
   }, [])
@@ -71,6 +70,23 @@ export default function Dashboard() {
     )
   }
 
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+          <div className="w-12 h-12 rounded-2xl bg-destructive/15 flex items-center justify-center">
+            <XCircle className="h-6 w-6 text-red-400" />
+          </div>
+          <p className="font-medium">No se pudo cargar el dashboard</p>
+          <p className="text-sm text-muted-foreground">{error}</p>
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Reintentar
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
@@ -78,7 +94,9 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Resumen general de tu plataforma de email marketing
+            {stats?.alcance === 'global'
+              ? 'Resumen de toda la plataforma'
+              : 'Resumen de tus campañas y contactos accesibles'}
           </p>
         </div>
         <Button asChild>

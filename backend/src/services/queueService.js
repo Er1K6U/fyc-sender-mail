@@ -72,6 +72,11 @@ const ENVIOS_PARA_REINICIAR_BACKOFF = 10;
 // de 176, manteniendo el ritmo en el 98 % del configurado.
 const ESPERA_MINIMA_GATE_MS = 15_000;
 
+// Cada cuántos envíos correctos se emite un hito al log en tiempo real.
+// Uno por correo convertiría el panel en una lista inmanejable en campañas
+// grandes; los fallos sí se registran individualmente.
+const HITO_LOG = 25;
+
 // Margen de seguridad del espaciado al encolar.
 // Sin él, el espaciado apunta EXACTAMENTE al tope horario y la compuerta —que
 // bloquea al alcanzarlo— salta continuamente: el encolado y la compuerta frenan
@@ -415,6 +420,14 @@ async function procesarEnvio(job) {
         categoria: clasificacion.categoria,
         permanente: clasificacion.permanente,
       });
+
+      // Los fallos SÍ se registran uno a uno: son lo que hay que ver.
+      socketService.emitirLog(
+        campaignId,
+        clasificacion.permanente ? 'error' : 'warning',
+        `${email}: ${clasificacion.mensaje}`
+      );
+
       await emitirProgresoActual(pool, campaignId);
 
       // Corte de seguridad. Va al final para que el envío quede bien registrado
@@ -621,6 +634,23 @@ async function emitirProgresoActual(pool, campaignId) {
     velocidad_por_min: velocidadPorMin,
     tiempo_restante_seg: tiempoRestanteSeg,
   });
+
+  // Hitos de progreso en el log.
+  //
+  // Antes no se emitía NINGÚN evento de log durante el envío normal —solo al
+  // encolar, al pausar y al terminar—, así que el panel de log se quedaba en
+  // "Esperando eventos..." toda la campaña aunque los correos salieran bien.
+  //
+  // Se emite el primero y luego uno cada HITO_LOG envíos: suficiente para ver
+  // que avanza, sin convertir el log en una lista de 500 líneas.
+  if (camp.enviados === 1) {
+    socketService.emitirLog(campaignId, 'success',
+      `Primer correo entregado. Ritmo objetivo: ${velocidadPorMin || '—'}/min.`);
+  } else if (camp.enviados > 0 && camp.enviados % HITO_LOG === 0) {
+    socketService.emitirLog(campaignId, 'info',
+      `${camp.enviados} de ${camp.total_envios} enviados ` +
+      `(${velocidadPorMin}/min · quedan ${pendientes}).`);
+  }
 
   // Detectar si la campaña se completó.
   // Condición única y verificable: no queda NINGÚN send en estado 'pendiente'.
