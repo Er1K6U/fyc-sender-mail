@@ -51,6 +51,117 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RECUPERACIÓN DE CAMPAÑAS INCONSISTENTES
+//
+// Una campaña dada por terminada que todavía tiene sends en 'pendiente' está en
+// un estado imposible: nadie va a enviarlos, porque nada los volverá a encolar.
+// Ocurre si la app se reinicia y los jobs se pierden de Redis, o por cualquier
+// fallo que deje la cola y la base de datos desalineadas.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/campanas/inconsistentes ──────────────────────────────────────────
+router.get('/inconsistentes', async (req, res, next) => {
+  try {
+    const pool = db();
+    const soloMias = acceso.esAdmin(req.usuario) ? '' : 'AND c.user_id = ?';
+    const params = acceso.esAdmin(req.usuario) ? [] : [req.usuario.id];
+
+    const [campanas] = await pool.query(
+      `SELECT c.id, c.nombre, c.estado, c.total_envios, c.enviados, c.fallidos,
+              c.completada_en,
+              COUNT(cs.id) AS pendientes_reales
+       FROM campaigns c
+       JOIN campaign_sends cs ON cs.campaign_id = c.id AND cs.estado = 'pendiente'
+       WHERE c.deleted_at IS NULL
+         AND c.estado IN ('completada', 'error')
+         ${soloMias}
+       GROUP BY c.id
+       ORDER BY c.completada_en DESC`,
+      params
+    );
+
+    res.json({
+      campanas: campanas.map(c => ({ ...c, pendientes_reales: Number(c.pendientes_reales) })),
+      total: campanas.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /api/campanas/:id/reencolar-pendientes ───────────────────────────────
+// Devuelve una campaña inconsistente a 'enviando' y reencola sus pendientes.
+router.post('/:id/reencolar-pendientes', async (req, res, next) => {
+  try {
+    const pool = db();
+    const campana = await campanaPropia(pool, req);
+    if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    if (campana.estado === 'enviando') {
+      return res.status(409).json({ error: 'La campaña ya está enviando' });
+    }
+
+    const [[{ pendientes }]] = await pool.query(
+      `SELECT COUNT(*) AS pendientes FROM campaign_sends
+       WHERE campaign_id = ? AND estado = 'pendiente'`,
+      [req.params.id]
+    );
+    if (Number(pendientes) === 0) {
+      return res.status(409).json({
+        error: 'Esta campaña no tiene envíos pendientes. No hay nada que reencolar.',
+      });
+    }
+
+    if (!campana.smtp_config_id) {
+      return res.status(400).json({ error: 'La campaña no tiene una cuenta SMTP asignada' });
+    }
+    const puedeUsarSmtp = await smtpAcceso.puedeUsar(req.usuario, campana.smtp_config_id);
+    if (!puedeUsarSmtp) {
+      return res.status(403).json({
+        error: 'Ya no tienes acceso a la cuenta SMTP de esta campaña. Contacta al administrador.',
+      });
+    }
+
+    await pool.query(
+      `UPDATE campaigns
+       SET estado = 'enviando', completada_en = NULL,
+           pausa_motivo = NULL, reanudar_en = NULL, fallos_consecutivos = 0
+       WHERE id = ?`,
+      [req.params.id]
+    );
+
+    let encolados = 0;
+    try {
+      const resultado = await encolarCampaña(req.params.id);
+      encolados = resultado?.encolados || 0;
+    } catch (err) {
+      logger.error(`Error al reencolar pendientes de la campaña ${req.params.id}:`, err);
+      await pool.query(`UPDATE campaigns SET estado = 'error' WHERE id = ?`, [req.params.id]);
+      return res.status(500).json({ error: `No se pudo reencolar: ${err.message}` });
+    }
+
+    await auditService.registrar({
+      evento: auditService.EVENTOS.CAMPANA_REENCOLADA,
+      campaignId: Number(req.params.id),
+      usuario: req.usuario,
+      ip: req.ip,
+      detalle: {
+        pendientes_detectados: Number(pendientes),
+        encolados,
+        estado_previo: campana.estado,
+      },
+    });
+
+    res.json({
+      mensaje: `${encolados} envío(s) pendiente(s) reencolado(s).`,
+      encolados,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── GET /api/campanas/eliminadas ──────────────────────────────────────────────
 // Campañas con soft delete. Solo admin. Debe declararse ANTES de GET /:id
 // para que Express no interprete "eliminadas" como un id.
@@ -649,16 +760,33 @@ router.post('/:id/reintentar', async (req, res, next) => {
       },
     });
 
-    // Reutiliza el encolado normal: hereda throttling, cap horario, jitter y la
-    // compuerta de la ventana móvil sin duplicar nada de esa lógica.
-    encolarCampaña(campana.id).catch(err => {
+    // Se ESPERA el encolado para poder informar de lo que realmente se encoló.
+    // Antes se lanzaba en segundo plano y se respondía con el número de
+    // candidatos, así que la respuesta decía "reenviando a N" aunque no se
+    // hubiese encolado nada.
+    let encolados = 0;
+    try {
+      const resultado = await encolarCampaña(campana.id);
+      encolados = resultado?.encolados || 0;
+    } catch (err) {
       logger.error(`Error al reencolar la campaña ${campana.id}:`, err);
-      pool.query(`UPDATE campaigns SET estado = 'error' WHERE id = ?`, [campana.id]);
-    });
+      await pool.query(`UPDATE campaigns SET estado = 'error' WHERE id = ?`, [campana.id]);
+      return res.status(500).json({
+        error: `No se pudo reencolar la campaña: ${err.message}`,
+      });
+    }
+
+    if (encolados === 0) {
+      return res.status(409).json({
+        error: 'No se encoló ningún envío. Puede que la cola no esté disponible o que ' +
+               'los envíos hayan cambiado de estado. Revisa el log del servidor.',
+      });
+    }
 
     res.json({
-      mensaje: `Reenviando a ${ids.length} destinatario(s). Los correos ya entregados no se repiten.`,
-      reintentados: ids.length,
+      mensaje: `Reenviando a ${encolados} destinatario(s). Los correos ya entregados no se repiten.`,
+      reintentados: encolados,
+      candidatos: ids.length,
     });
   } catch (error) {
     next(error);
@@ -736,8 +864,15 @@ router.get('/:id/progreso', async (req, res, next) => {
     );
     if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
 
+    // Pendientes reales desde la BD: restar contadores puede mentir si se han
+    // desviado, y es justo lo que ocultaba campañas incompletas.
+    const [[{ pendientes }]] = await pool.query(
+      `SELECT COUNT(*) AS pendientes FROM campaign_sends
+       WHERE campaign_id = ? AND estado = 'pendiente'`,
+      [req.params.id]
+    );
+
     const procesados = campana.enviados + campana.fallidos;
-    const pendientes = campana.total_envios - procesados;
 
     // Velocidad reciente
     const [[{ cnt }]] = await pool.query(
@@ -752,6 +887,9 @@ router.get('/:id/progreso', async (req, res, next) => {
       ...campana,
       procesados,
       pendientes,
+      // Estado imposible: dada por terminada pero con envíos aún pendientes.
+      // La UI lo avisa y ofrece reencolar.
+      inconsistente: ['completada', 'error'].includes(campana.estado) && pendientes > 0,
       porcentaje: campana.total_envios > 0
         ? Math.round((procesados / campana.total_envios) * 100)
         : 0,

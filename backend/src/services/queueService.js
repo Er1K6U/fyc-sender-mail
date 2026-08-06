@@ -584,8 +584,17 @@ async function emitirProgresoActual(pool, campaignId) {
   );
   if (!camp) return;
 
+  // Los pendientes se cuentan en la BASE DE DATOS, no restando contadores.
+  // Los contadores pueden desviarse (reintentos, reinicios, jobs perdidos en
+  // Redis) y basarse en ellos llevaba a dar por completada una campaña que
+  // todavía tenía envíos pendientes.
+  const [[{ pendientes }]] = await pool.query(
+    `SELECT COUNT(*) AS pendientes FROM campaign_sends
+     WHERE campaign_id = ? AND estado = 'pendiente'`,
+    [campaignId]
+  );
+
   const procesados = camp.enviados + camp.fallidos;
-  const pendientes = camp.total_envios - procesados;
 
   // Calcular velocidad (emails/min en los últimos 5 minutos)
   const [[velocidadRow]] = await pool.query(
@@ -613,8 +622,9 @@ async function emitirProgresoActual(pool, campaignId) {
     tiempo_restante_seg: tiempoRestanteSeg,
   });
 
-  // Detectar si la campaña se completó
-  if (pendientes === 0 && procesados === camp.total_envios && camp.total_envios > 0) {
+  // Detectar si la campaña se completó.
+  // Condición única y verificable: no queda NINGÚN send en estado 'pendiente'.
+  if (pendientes === 0 && camp.total_envios > 0) {
     const [transicion] = await pool.query(
       `UPDATE campaigns SET estado = 'completada', completada_en = NOW() WHERE id = ? AND estado = 'enviando'`,
       [campaignId]
@@ -702,33 +712,30 @@ async function encolarCampaña(campaignId) {
     [campaña.list_id, campaignId]
   );
 
-  if (contactos.length === 0) {
+  // Crear registros campaign_sends para los contactos que aún no lo tienen.
+  //
+  // OJO: que esta lista venga vacía NO significa que no quede nada por enviar.
+  // Significa que no hay contactos NUEVOS que añadir; los sends ya existentes en
+  // estado 'pendiente' siguen ahí. Confundir ambas cosas marcaba la campaña como
+  // completada dejando envíos pendientes sin encolar.
+  if (contactos.length > 0) {
+    // Se guarda smtp_config_id como snapshot: la atribución del envío queda
+    // congelada aunque después se edite la cuenta SMTP de la campaña.
+    const valores = contactos.map(c => [campaignId, c.id, c.email, 'pendiente', campaña.smtp_id]);
     await pool.query(
-      `UPDATE campaigns SET estado = 'completada', completada_en = NOW() WHERE id = ?`,
-      [campaignId]
+      `INSERT IGNORE INTO campaign_sends
+         (campaign_id, contact_id, email, estado, smtp_config_id) VALUES ?`,
+      [valores]
     );
-    socketService.emitirCompletada(campaignId, { total: 0, enviados: 0, fallidos: 0 });
-    return { encolados: 0 };
   }
 
-  // Crear registros campaign_sends en batch (IGNORE duplicados)
-  // Se guarda smtp_config_id como snapshot: la atribución del envío queda
-  // congelada aunque después se edite la cuenta SMTP de la campaña.
-  const valores = contactos.map(c => [campaignId, c.id, c.email, 'pendiente', campaña.smtp_id]);
   await pool.query(
-    `INSERT IGNORE INTO campaign_sends
-       (campaign_id, contact_id, email, estado, smtp_config_id) VALUES ?`,
-    [valores]
-  );
-
-  // Actualizar total_envios en la campaña
-  await pool.query(
-    `UPDATE campaigns SET total_envios = ?, estado = 'enviando', iniciada_en = COALESCE(iniciada_en, NOW())
+    `UPDATE campaigns SET estado = 'enviando', iniciada_en = COALESCE(iniciada_en, NOW())
      WHERE id = ?`,
-    [campaña.total_envios + contactos.length || contactos.length, campaignId]
+    [campaignId]
   );
 
-  // Obtener los send_ids recién creados
+  // La única fuente de verdad de lo que falta por enviar: la base de datos.
   const [sends] = await pool.query(
     `SELECT cs.id as sendId, cs.email, c.nombre, c.empresa
      FROM campaign_sends cs
@@ -736,6 +743,29 @@ async function encolarCampaña(campaignId) {
      WHERE cs.campaign_id = ? AND cs.estado = 'pendiente'`,
     [campaignId]
   );
+
+  // Ahora sí: si no queda ningún send pendiente, la campaña está completada.
+  if (sends.length === 0) {
+    await pool.query(
+      `UPDATE campaigns c
+       SET c.total_envios = (SELECT COUNT(*) FROM campaign_sends WHERE campaign_id = c.id),
+           c.estado = 'completada',
+           c.completada_en = NOW()
+       WHERE c.id = ?`,
+      [campaignId]
+    );
+    const [[camp]] = await pool.query(
+      'SELECT total_envios, enviados, fallidos FROM campaigns WHERE id = ?',
+      [campaignId]
+    );
+    socketService.emitirCompletada(campaignId, {
+      total: camp?.total_envios || 0,
+      enviados: camp?.enviados || 0,
+      fallidos: camp?.fallidos || 0,
+    });
+    logger.info(`Campaña ${campaignId}: no quedan envíos pendientes, marcada como completada.`);
+    return { encolados: 0 };
+  }
 
   // Configurar throttle: emails por minuto.
   // El valor global actúa como TOPE MÁXIMO (cap): ninguna campaña puede superarlo.
@@ -1029,6 +1059,25 @@ function iniciarScheduler() {
         );
         reanudarCampaña(camp.id).catch(err =>
           logger.error(`Error al reanudar campaña ${camp.id}:`, err)
+        );
+      }
+
+      // Detectar campañas en estado imposible: dadas por terminadas pero con
+      // envíos aún pendientes. Nadie los va a enviar, porque nada los volverá a
+      // encolar. No se reparan solas —reanudar envíos sin que nadie lo pida
+      // sería peor— pero quedan registradas para que se vean.
+      const [inconsistentes] = await pool.query(
+        `SELECT c.id, c.nombre, COUNT(cs.id) AS pendientes
+         FROM campaigns c
+         JOIN campaign_sends cs ON cs.campaign_id = c.id AND cs.estado = 'pendiente'
+         WHERE c.deleted_at IS NULL AND c.estado IN ('completada', 'error')
+         GROUP BY c.id`
+      );
+
+      for (const camp of inconsistentes) {
+        logger.warn(
+          `Campaña ${camp.id} ("${camp.nombre}") está marcada como terminada pero tiene ` +
+          `${camp.pendientes} envíos pendientes. Usa "Reencolar pendientes" para recuperarla.`
         );
       }
     } catch (error) {

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, Play, Pause, XCircle, CheckCircle2,
   Clock, Send, Zap, BarChart2,
-  RefreshCw, Eye, MousePointerClick, ShieldAlert, OctagonAlert,
+  RefreshCw, Eye, MousePointerClick, ShieldAlert, OctagonAlert, AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -43,6 +43,8 @@ interface Progreso {
   total: number; enviados: number; fallidos: number; pendientes: number
   velocidad: number; eta_segundos: number | null
   abiertos: number; clicks: number
+  /** Dada por terminada pero con envíos aún pendientes */
+  inconsistente?: boolean
 }
 
 const ESTADO_BADGE: Record<string, { variant: any; label: string }> = {
@@ -99,6 +101,7 @@ export default function DetalleCampana() {
   const [pagina, setPagina] = useState(1)
   const [totalSends, setTotalSends] = useState(0)
   const [modalReintento, setModalReintento] = useState(false)
+  const [reencolando, setReencolando] = useState(false)
   const logsRef = useRef<HTMLDivElement>(null)
 
   // Cargar estado inicial
@@ -120,6 +123,7 @@ export default function DetalleCampana() {
         eta_segundos: p.eta_segundos ?? null,
         abiertos: rCampana.data.campana.abiertos || 0,
         clicks: rCampana.data.campana.clicks || 0,
+        inconsistente: !!p.inconsistente,
       })
       setSends(rSends.data.sends ?? [])
       setTotalSends(rSends.data.total ?? 0)
@@ -228,6 +232,20 @@ export default function DetalleCampana() {
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
   }, [pausadaPorLimite, campana?.reanudar_en])
+
+  // Recuperación de una campaña que quedó incompleta
+  const reencolarPendientes = async () => {
+    setReencolando(true)
+    try {
+      const { data } = await api.post(`/campanas/${campaignId}/reencolar-pendientes`)
+      mostrar('success', 'Envíos reencolados', data.mensaje)
+      cargar()
+    } catch (err: any) {
+      mostrar('error', 'No se pudo reencolar', err.response?.data?.error)
+    } finally {
+      setReencolando(false)
+    }
+  }
 
   const accion = async (endpoint: string, mensaje: string) => {
     try {
@@ -383,6 +401,36 @@ export default function DetalleCampana() {
                   {campana.ultimo_error_smtp}
                 </p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Estado inconsistente: terminada pero con envíos pendientes */}
+      {progreso.inconsistente && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-yellow-500/15 flex items-center justify-center shrink-0">
+              <AlertTriangle className="h-5 w-5 text-yellow-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-yellow-400">
+                Esta campaña quedó incompleta
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                Figura como terminada, pero todavía tiene{' '}
+                <strong>{formatearNumero(progreso.pendientes)} envíos pendientes</strong> que
+                nadie va a procesar. Suele pasar si la aplicación se reinició y los trabajos
+                se perdieron de la cola. Los correos ya entregados no se repetirán.
+              </p>
+              <Button
+                className="mt-3"
+                onClick={reencolarPendientes}
+                loading={reencolando}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Reencolar {formatearNumero(progreso.pendientes)} pendientes
+              </Button>
             </div>
           </div>
         </div>
