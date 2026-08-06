@@ -12,6 +12,8 @@ const {
 const auditService = require('../services/auditService');
 const smtpAcceso = require('../services/smtpAccesoService');
 const acceso = require('../services/accesoService');
+const telemetriaService = require('../services/telemetriaService');
+const settingsService = require('../services/settingsService');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -33,7 +35,7 @@ router.get('/', async (req, res, next) => {
       `SELECT c.id, c.nombre, c.asunto, c.from_nombre, c.from_email,
               c.estado, c.total_envios, c.enviados, c.fallidos, c.abiertos,
               c.clicks, c.programada_para, c.iniciada_en, c.completada_en,
-              c.created_at,
+              c.created_at, c.emails_por_hora, c.pausa_motivo, c.reanudar_en,
               cl.nombre AS lista_nombre,
               t.nombre AS template_nombre,
               s.nombre AS smtp_nombre
@@ -45,6 +47,41 @@ router.get('/', async (req, res, next) => {
        ORDER BY c.created_at DESC`,
       [req.usuario.id]
     );
+
+    // Aviso de ritmo bajo, con UNA consulta agregada para todas las activas
+    // (no una por campaña). Es lo que permite detectar de un vistazo que algo
+    // está frenando sin entrar en el detalle.
+    const activas = campanas.filter(c => c.estado === 'enviando').map(c => c.id);
+    if (activas.length > 0) {
+      const [ritmos] = await pool.query(
+        `SELECT campaign_id, COUNT(*) AS ultima_hora
+         FROM campaign_sends
+         WHERE campaign_id IN (?) AND estado = 'enviado'
+           AND enviado_en >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+         GROUP BY campaign_id`,
+        [activas]
+      );
+      const mapa = Object.fromEntries(ritmos.map(r => [r.campaign_id, Number(r.ultima_hora)]));
+      const throttle = await settingsService.getThrottle();
+
+      for (const c of campanas) {
+        if (c.estado !== 'enviando') continue;
+        const configurado = Math.min(
+          c.emails_por_hora || throttle.emails_por_hora,
+          throttle.emails_por_hora
+        );
+        const real = mapa[c.id] || 0;
+        c.ritmo_ultima_hora = real;
+        c.ritmo_configurado = configurado;
+        // Solo se avisa si lleva al menos media hora arrancada; antes de eso la
+        // ventana móvil aún no está llena y cualquier cifra sería engañosa.
+        const arrancadaHace = c.iniciada_en
+          ? Date.now() - new Date(c.iniciada_en).getTime() : 0;
+        c.ritmo_bajo = arrancadaHace > 30 * 60 * 1000 &&
+                       configurado > 0 && real < configurado * 0.5;
+      }
+    }
+
     res.json({ campanas });
   } catch (error) {
     next(error);
@@ -898,6 +935,23 @@ router.get('/:id/progreso', async (req, res, next) => {
         ? Math.ceil(pendientes / velocidadPorMin) * 60
         : null,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/campanas/:id/telemetria ──────────────────────────────────────────
+// Snapshot inicial; a partir de ahí llega por Socket.io cada 5 s.
+router.get('/:id/telemetria', async (req, res, next) => {
+  try {
+    const pool = db();
+    const campana = await campanaPropia(pool, req);
+    if (!campana) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    const snapshot = await telemetriaService.obtenerSnapshot(req.params.id);
+    if (!snapshot) return res.status(404).json({ error: 'Campaña no encontrada' });
+
+    res.json(snapshot);
   } catch (error) {
     next(error);
   }

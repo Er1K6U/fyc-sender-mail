@@ -4,6 +4,7 @@ import {
   Send, Plus, Play, Pause, XCircle, BarChart2,
   Clock, CheckCircle2, FileText,
   ChevronRight, Trash2, Eye, RefreshCw,
+  ShieldAlert, OctagonAlert, TrendingDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -31,6 +32,11 @@ interface Campana {
   created_at: string
   lista_nombre?: string
   smtp_nombre?: string
+  // Diagnóstico rápido sin entrar al detalle
+  pausa_motivo?: string | null
+  ritmo_bajo?: boolean
+  ritmo_ultima_hora?: number
+  ritmo_configurado?: number
 }
 
 const ESTADO_CONFIG: Record<string, { label: string; variant: any; icon: React.ReactNode; color: string }> = {
@@ -214,6 +220,28 @@ export default function Campanas() {
                           <span>Creada: {formatearFecha(campana.created_at)}</span>
                         )}
                       </div>
+
+                      {/* Aviso de diagnóstico: se ve sin entrar al detalle */}
+                      {(campana.ritmo_bajo || campana.pausa_motivo) && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {campana.pausa_motivo === 'limite_smtp' && (
+                            <Badge variant="orange" className="text-[10px]">
+                              <ShieldAlert className="h-3 w-3" /> Pausada por límite de Gmail
+                            </Badge>
+                          )}
+                          {campana.pausa_motivo === 'fallos_consecutivos' && (
+                            <Badge variant="destructive" className="text-[10px]">
+                              <OctagonAlert className="h-3 w-3" /> Detenida por fallos
+                            </Badge>
+                          )}
+                          {campana.ritmo_bajo && (
+                            <Badge variant="warning" className="text-[10px]">
+                              <TrendingDown className="h-3 w-3" />
+                              Ritmo bajo: {campana.ritmo_ultima_hora}/h de {campana.ritmo_configurado}
+                            </Badge>
+                          )}
+                        </div>
+                      )}
 
                       {/* Barra de progreso */}
                       {campana.total_envios > 0 && (

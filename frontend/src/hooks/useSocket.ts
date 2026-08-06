@@ -53,6 +53,7 @@ export function useCampaignSocket(
       'campaign:error',
       'campaign:paused',
       'campaign:log',
+      'campaign:telemetry',
     ]
 
     const wrappers: Record<string, (...args: any[]) => void> = {}

@@ -82,6 +82,29 @@ function emitirPausada(campaignId, datos = {}) {
   io.to(`campaign:${campaignId}`).emit('campaign:paused', { campaignId, ...datos });
 }
 
+/** Telemetría de envío (contadores, ventana móvil, ritmo) */
+function emitirTelemetria(campaignId, datos) {
+  if (!io) return;
+  io.to(`campaign:${campaignId}`).emit('campaign:telemetry', { campaignId, ...datos });
+}
+
+/**
+ * IDs de campañas con al menos un cliente mirando su detalle.
+ *
+ * La telemetría solo se calcula para estas: si nadie tiene la pantalla abierta,
+ * no se ejecuta ni una consulta. Cada socket pertenece además a una sala con su
+ * propio id, de ahí el filtro por el patrón `campaign:<número>`.
+ */
+function campanasObservadas() {
+  if (!io) return [];
+  const ids = [];
+  for (const [sala, miembros] of io.sockets.adapter.rooms) {
+    const coincide = /^campaign:(\d+)$/.exec(sala);
+    if (coincide && miembros.size > 0) ids.push(Number(coincide[1]));
+  }
+  return ids;
+}
+
 /** Log de actividad en tiempo real */
 function emitirLog(campaignId, nivel, mensaje) {
   if (!io) return;
@@ -102,4 +125,6 @@ module.exports = {
   emitirError,
   emitirPausada,
   emitirLog,
+  emitirTelemetria,
+  campanasObservadas,
 };

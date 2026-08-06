@@ -13,6 +13,7 @@ import { useCampaignSocket } from '@/hooks/useSocket'
 import { cn, formatearFecha, formatearNumero } from '@/lib/utils'
 import { metaCategoria } from '@/lib/erroresSmtp'
 import ModalReintento from '@/components/campanas/ModalReintento'
+import PanelTelemetria, { type Telemetria } from '@/components/campanas/PanelTelemetria'
 import api from '@/lib/api'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -102,16 +103,20 @@ export default function DetalleCampana() {
   const [totalSends, setTotalSends] = useState(0)
   const [modalReintento, setModalReintento] = useState(false)
   const [reencolando, setReencolando] = useState(false)
+  const [telemetria, setTelemetria] = useState<Telemetria | null>(null)
   const logsRef = useRef<HTMLDivElement>(null)
 
   // Cargar estado inicial
   const cargar = async () => {
     try {
-      const [rCampana, rProgreso, rSends] = await Promise.all([
+      const [rCampana, rProgreso, rSends, rTelemetria] = await Promise.all([
         api.get(`/campanas/${campaignId}`),
         api.get(`/campanas/${campaignId}/progreso`),
         api.get(`/campanas/${campaignId}/sends?pagina=1&por_pagina=50`),
+        // Snapshot inicial; a partir de aquí llega por socket cada 5 s.
+        api.get(`/campanas/${campaignId}/telemetria`).catch(() => null),
       ])
+      if (rTelemetria) setTelemetria(rTelemetria.data)
       setCampana(rCampana.data.campana)
       const p = rProgreso.data
       setProgreso({
@@ -187,6 +192,12 @@ export default function DetalleCampana() {
     'campaign:error': (msg: string) => {
       setCampana(prev => prev ? { ...prev, estado: 'error' } : null)
       mostrar('error', `Error en campaña: ${msg}`)
+    },
+    'campaign:telemetry': (data: any) => {
+      setTelemetria(data)
+      // El estado puede cambiar entre recargas (pausa automática, reanudación).
+      setCampana(prev => prev && prev.estado !== data.estado
+        ? { ...prev, estado: data.estado } : prev)
     },
     'campaign:log': (data: any) => {
       setLogs(prev => [
@@ -520,6 +531,11 @@ export default function DetalleCampana() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Telemetría de envío: por qué espera, consumo de límites y ritmo real */}
+      {telemetria && !['borrador', 'completada'].includes(campana.estado) && (
+        <PanelTelemetria datos={telemetria} />
       )}
 
       {/* Métricas en tiempo real */}

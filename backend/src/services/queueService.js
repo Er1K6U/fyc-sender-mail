@@ -1089,6 +1089,42 @@ function iniciarScheduler() {
   if (intervalo.unref) intervalo.unref();
 
   logger.info('✅ Scheduler de campañas iniciado (intervalo: 60s)');
+
+  iniciarTelemetria();
+}
+
+/**
+ * Latido de telemetría.
+ *
+ * Emite el estado de envío cada 5 s SOLO a las campañas que alguien está
+ * mirando. Si nadie tiene abierto un detalle, no se ejecuta ni una consulta.
+ *
+ * Hace falta un latido —y no basta con emitir en cada envío— porque durante una
+ * pausa de 15 minutos no ocurre ningún evento, y es justo cuando más interesa
+ * ver qué pasa.
+ */
+function iniciarTelemetria() {
+  const intervalo = setInterval(async () => {
+    try {
+      const observadas = socketService.campanasObservadas();
+      if (observadas.length === 0) return;
+
+      const telemetriaService = require('./telemetriaService');
+      for (const campaignId of observadas) {
+        try {
+          const snapshot = await telemetriaService.obtenerSnapshot(campaignId);
+          if (snapshot) socketService.emitirTelemetria(campaignId, snapshot);
+        } catch (error) {
+          logger.warn(`Telemetría de campaña ${campaignId} falló: ${error.message}`);
+        }
+      }
+    } catch (error) {
+      logger.error('Error en el latido de telemetría:', error);
+    }
+  }, 5_000);
+
+  if (intervalo.unref) intervalo.unref();
+  logger.info('✅ Telemetría de campañas iniciada (intervalo: 5s, solo observadas)');
 }
 
 /**
