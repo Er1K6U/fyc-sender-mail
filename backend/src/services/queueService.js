@@ -87,6 +87,38 @@ const HITO_LOG = 25;
 const MARGEN_ESPACIADO_PCT = 2;
 
 /**
+ * Espaciado entre correos de una campaña, en ms.
+ *
+ * Fuente ÚNICA de esta cifra: la usan tanto el encolado como la compuerta en
+ * tiempo de envío. Tenerla duplicada era lo que permitía que un camino
+ * respetara el ritmo y otro no.
+ *
+ * Manda el mayor de los dos topes: con 12/min (5 s) y 120/hora (30 s), el
+ * intervalo real es de 30 s, no de 5.
+ */
+function calcularEspaciadoMs(campaña, throttleGlobal) {
+  const porMin = Math.min(
+    campaña.emails_por_min || throttleGlobal.emails_por_min || 20,
+    throttleGlobal.emails_por_min
+  );
+  const porHora = Math.min(
+    campaña.emails_por_hora || throttleGlobal.emails_por_hora,
+    throttleGlobal.emails_por_hora
+  );
+
+  const espaciadoPorMin = Math.ceil(60_000 / Math.max(1, porMin));
+  const espaciadoPorHora = porHora > 0 ? Math.ceil(3_600_000 / porHora) : 0;
+
+  return {
+    espaciadoMs: Math.ceil(
+      Math.max(espaciadoPorMin, espaciadoPorHora) * (1 + MARGEN_ESPACIADO_PCT / 100)
+    ),
+    porMin,
+    porHora,
+  };
+}
+
+/**
  * Compuerta de límite horario. Se evalúa ANTES de cada envío.
  *
  * Cuenta los correos ya enviados en los últimos 60 minutos y comprueba dos
@@ -102,10 +134,36 @@ const MARGEN_ESPACIADO_PCT = 2;
  *
  * @returns {{permitido: boolean, esperaMs: number, motivo: string}}
  */
-async function verificarLimiteHorario(pool, campaignId, smtpConfigId, limiteCampana, limiteCuenta) {
+async function verificarLimiteHorario(
+  pool, campaignId, smtpConfigId, limiteCampana, limiteCuenta, espaciadoMs = 0
+) {
   const ahora = Date.now();
   let esperaMs = 0;
   let motivo = '';
+
+  // ── Intervalo mínimo entre correos ──
+  //
+  // El espaciado lo fijaba SOLO el plan de encolado. Al diferir un job por el
+  // tope horario se perdía: todos los bloqueados despertaban a la vez y, en
+  // cuanto se liberaba hueco, salían en ráfaga sin espaciado. Con 12/min podían
+  // irse 24/min y llenar el cupo de la hora en cinco minutos.
+  //
+  // Comprobarlo aquí lo convierte en barrera real, igual que el tope horario:
+  // da igual cómo esté programado el job, no puede adelantarse.
+  if (espaciadoMs > 0) {
+    const [[ultimo]] = await pool.query(
+      `SELECT MAX(enviado_en) AS ultimo FROM campaign_sends
+       WHERE campaign_id = ? AND estado = 'enviado'`,
+      [campaignId]
+    );
+    if (ultimo?.ultimo) {
+      const transcurrido = ahora - new Date(ultimo.ultimo).getTime();
+      if (transcurrido < espaciadoMs) {
+        esperaMs = espaciadoMs - transcurrido;
+        motivo = 'espaciado entre correos';
+      }
+    }
+  }
 
   // Devuelve los ms que faltan para que se libere un hueco, o 0 si hay sitio.
   const evaluar = async (sql, params, limite, etiqueta) => {
@@ -114,13 +172,19 @@ async function verificarLimiteHorario(pool, campaignId, smtpConfigId, limiteCamp
     const enviados = Number(fila?.enviados || 0);
     if (enviados < limite) return;
 
-    // Ventana llena: el hueco se abre cuando el más antiguo cumple 1 hora.
+    // Ventana llena: el hueco se abre exactamente cuando el envío más antiguo
+    // de la ventana cumple una hora. Ese es el tiempo que hay que esperar, no
+    // un reintento a ciegas cada minuto.
     const masAntiguo = fila?.mas_antiguo ? new Date(fila.mas_antiguo).getTime() : ahora;
     const libreEn = masAntiguo + 3_600_000;
-    // Suelo pequeño: solo evita el bucle cerrado cuando el hueco está al caer.
-    // Con un suelo grande, el espaciado normal (que ya cumple el tope) quedaría
-    // frenado una segunda vez y el ritmo real caería por debajo del configurado.
-    const espera = Math.max(ESPERA_MINIMA_GATE_MS, libreEn - ahora);
+
+    // Si la fecha viniera corrupta, mejor una espera conservadora que un NaN
+    // que Bull interpretaría como "ya", dejando el job en bucle cerrado.
+    const restante = Number.isFinite(libreEn - ahora)
+      ? libreEn - ahora
+      : ESPERA_MINIMA_GATE_MS;
+
+    const espera = Math.max(ESPERA_MINIMA_GATE_MS, restante);
 
     if (espera > esperaMs) {
       esperaMs = espera;
@@ -159,30 +223,56 @@ async function verificarLimiteHorario(pool, campaignId, smtpConfigId, limiteCamp
  * No se usa `throw` porque eso consumiría los reintentos de Bull, que están
  * reservados para errores reales de envío.
  */
-async function diferirEnvio(job, esperaMs, motivo) {
+/** Formatea una espera en texto legible: segundos, minutos o horas. */
+function formatearEspera(ms) {
+  const seg = Math.round(ms / 1000);
+  if (seg < 60) return `${seg} s`;
+  const min = Math.round(seg / 60);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const restoMin = min % 60;
+  return restoMin ? `${h} h ${restoMin} min` : `${h} h`;
+}
+
+async function diferirEnvio(job, esperaMs, motivo, espaciadoMs = 0) {
   const cola = await inicializarCola();
   const { campaignId, sendId } = job.data;
 
   // Contador de diferimientos para que el jobId sea único en cada reintento.
   const intento = (job.data.diferimientos || 0) + 1;
 
+  // Escalonado: todos los jobs bloqueados calculan la MISMA espera, así que sin
+  // esto despertarían en el mismo instante y saldrían en ráfaga en cuanto se
+  // liberara hueco. Un desplazamiento aleatorio dentro de un intervalo de
+  // espaciado los reparte.
+  const escalonado = espaciadoMs > 0 ? Math.floor(Math.random() * espaciadoMs) : 0;
+  const esperaFinal = esperaMs + escalonado;
+
   await cola.add('send-email', { ...job.data, diferimientos: intento }, {
-    delay: esperaMs,
+    delay: esperaFinal,
     attempts: job.opts.attempts,
     backoff: job.opts.backoff,
     jobId: `send_${campaignId}_${sendId}_dif${intento}`,
   });
 
-  // Aviso al usuario, como mucho una vez por minuto y campaña.
-  const ultimo = ultimoAvisoDiferido.get(campaignId) || 0;
-  if (Date.now() - ultimo > MS_ENTRE_AVISOS) {
-    ultimoAvisoDiferido.set(campaignId, Date.now());
-    const minutos = Math.ceil(esperaMs / 60_000);
+  // Aviso al usuario. Solo se repite si el tiempo de espera cambió de verdad:
+  // antes se emitía el mismo texto cada minuto aunque nada hubiera cambiado,
+  // dando la impresión de que el sistema no avanzaba.
+  const previo = ultimoAvisoDiferido.get(campaignId);
+  const textoEspera = formatearEspera(esperaMs);
+  const cambio = !previo || previo.texto !== textoEspera;
+
+  if (cambio || Date.now() - previo.ts > MS_ENTRE_AVISOS * 5) {
+    ultimoAvisoDiferido.set(campaignId, { ts: Date.now(), texto: textoEspera });
+
+    const reanudaEn = new Date(Date.now() + esperaMs)
+      .toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
     socketService.emitirLog(
       campaignId, 'warning',
-      `Límite horario alcanzado (${motivo}). Los envíos continúan en ~${minutos} min.`
+      `En pausa por ${motivo}. Los envíos se reanudan en ${textoEspera} (sobre las ${reanudaEn}).`
     );
-    logger.info(`Campaña ${campaignId}: envíos diferidos ${minutos} min — ${motivo}`);
+    logger.info(`Campaña ${campaignId}: diferida ${textoEspera} — ${motivo}`);
   }
 }
 
@@ -261,20 +351,22 @@ async function procesarEnvio(job) {
     // sigue 'pendiente', así que no se pierde ningún correo.
     const throttleGlobal = await settingsService.getThrottle();
     const [[limCamp]] = await pool.query(
-      'SELECT emails_por_hora FROM campaigns WHERE id = ?',
+      'SELECT emails_por_min, emails_por_hora FROM campaigns WHERE id = ?',
       [campaignId]
     );
-    const limiteCampana = Math.min(
-      limCamp?.emails_por_hora || throttleGlobal.emails_por_hora,
-      throttleGlobal.emails_por_hora
-    );
+
+    // Mismo helper que usa el encolado: una sola definición del espaciado.
+    const { espaciadoMs, porHora: limiteCampana } =
+      calcularEspaciadoMs(limCamp || {}, throttleGlobal);
 
     const gate = await verificarLimiteHorario(
-      pool, campaignId, smtpConfig?.id, limiteCampana, throttleGlobal.emails_por_hora
+      pool, campaignId, smtpConfig?.id,
+      limiteCampana, throttleGlobal.emails_por_hora,
+      espaciadoMs
     );
     if (!gate.permitido) {
-      await diferirEnvio(job, gate.esperaMs, gate.motivo);
-      return { skipped: true, motivo: `Diferido por límite horario (${gate.motivo})` };
+      await diferirEnvio(job, gate.esperaMs, gate.motivo, espaciadoMs);
+      return { skipped: true, motivo: `Diferido: ${gate.motivo}` };
     }
 
     // Verificar lista negra
@@ -810,25 +902,14 @@ async function encolarCampaña(campaignId) {
 
   // Configurar throttle: emails por minuto.
   // El valor global actúa como TOPE MÁXIMO (cap): ninguna campaña puede superarlo.
+  // Mismo helper que usa la compuerta en tiempo de envío: el espaciado se
+  // define en un solo sitio y todos los caminos de encolado lo comparten.
   const throttleGlobal = await settingsService.getThrottle();
-  const emailsPorMinCampaña = campaña.emails_por_min || throttleGlobal.emails_por_min || 20;
-  const emailsPorMin = Math.min(emailsPorMinCampaña, throttleGlobal.emails_por_min);
-
-  // El límite por hora también acota el espaciado: si emails_por_min permitiera
-  // más de emails_por_hora en 60 min, manda el segundo. Así el plan de encolado
-  // respeta ambos topes por construcción y la compuerta en tiempo de envío
-  // queda como red de seguridad (imprescindible cuando varias campañas
-  // comparten cuenta SMTP, algo que aquí no se puede prever).
-  const emailsPorHoraCampaña = campaña.emails_por_hora || throttleGlobal.emails_por_hora;
-  const emailsPorHora = Math.min(emailsPorHoraCampaña, throttleGlobal.emails_por_hora);
-
-  const espaciadoPorMin = Math.ceil(60_000 / emailsPorMin);
-  const espaciadoPorHora = emailsPorHora > 0 ? Math.ceil(3_600_000 / emailsPorHora) : 0;
-  // El margen deja el ritmo natural justo por debajo del tope, para que la
-  // compuerta horaria no esté rozando el techo en cada envío.
-  const delayBaseMs = Math.ceil(
-    Math.max(espaciadoPorMin, espaciadoPorHora) * (1 + MARGEN_ESPACIADO_PCT / 100)
-  );
+  const {
+    espaciadoMs: delayBaseMs,
+    porMin: emailsPorMin,
+    porHora: emailsPorHora,
+  } = calcularEspaciadoMs(campaña, throttleGlobal);
 
   // Jitter: randomización ±jitter_pct sobre el intervalo base para un patrón menos robótico.
   const jitterPct = Math.max(0, Math.min(100, throttleGlobal.jitter_pct || 0));
